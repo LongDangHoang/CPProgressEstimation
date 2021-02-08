@@ -1,0 +1,4 @@
+# checkpoints, cache, and settings
+.vscode/
+.ipynb_checkpoints/
+# __pycache__/
