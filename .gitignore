@@ -1,4 +1,10 @@
 # checkpoints, cache, and settings
 .vscode/
 .ipynb_checkpoints/
-# __pycache__/
+__pycache__/
+
+# this file
+.gitignore
+
+# trees files cause they are too heavy
+trees/
