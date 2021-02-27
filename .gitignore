@@ -7,4 +7,5 @@ __pycache__/
 .gitignore
 
 # trees files cause they are too heavy
+
 trees/

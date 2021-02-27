@@ -33,7 +33,6 @@ constraint differences[1] < differences[(m*(m-1)) div 2];
 
 solve :: int_search(mark, input_order, indomain, complete)
     minimize mark[m];
-%       satisfy;
 
 output [show(mark)];
 
