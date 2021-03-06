@@ -10,27 +10,9 @@ import matplotlib.pyplot as plt
 
 import unittest
 
+from itertools import chain
+
 EPSILON = 10e-7
-
-class DomainRange:
-
-    def __init__(self, values: list):
-        
-        assert isinstance(values, list)
-        assert len(values) > 0
-
-        self.values = values # store pass in list of values
-
-    def __len__(self):
-        
-        length = 0
-        for value in self.values:
-            try:
-                length += len(value)
-            except ValueError:
-                length += 1 # assume value is a single value
-        
-        return length
 
 def to_df(file: str, table: str) -> pd.DataFrame:
     
@@ -86,9 +68,9 @@ def parse_info_string(node_info: str) -> dict:
             if str.isdigit(value):
                 values.append(range(int(value), int(value) + 1))
             else:
-                values.append(value)
+                values.append([value])
         
-        info_dict[varname] = DomainRange(values)
+        info_dict[varname] = set.union(*[set(inner) for inner in values])
 
         try:
             assert len(info_dict[varname]) >= 1
@@ -131,21 +113,183 @@ def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     assert set(dfs_ordering) == (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index))
     return dfs_ordering
 
-def get_cum_weights(nodes_df: pd.DataFrame, ordering: list) -> pd.Series:
+def get_cum_weight(nodes_df: pd.DataFrame, weight_column: str, ordering: list) -> pd.Series:
     """
-    Calculate cumulative sum according to an ordering
+    Calculate cumulative sum according to an ordering using weight_column
     """
     if set(ordering) != (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index)):
-        raise ValueError("Ordering is not a correct ordering of nodes. Some nodes are missing or redundant")
+        raise ValueError("Ordering is not a correct ordering of nodes. Some nodes are missing or redundant.")
+    elif weight_column not in nodes_df.columns:
+        raise ValueError("Weight column not in dataframe's columns.")
 
     cumulative = nodes_df.reindex(ordering)
-    cumsum = cumulative[cumulative['Status'].isin({0, 1})]['NodeWeight']\
+    cumsum = cumulative[cumulative['Status'].isin({0, 1})][weight_column]\
                          .cumsum()\
                          .reindex(ordering)\
                          .reset_index(drop=True)\
                          .fillna(method='ffill').fillna(0)  
 
     return cumsum
+
+def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Performance', 
+        figsize: tuple=(5, 5)) -> 'fig, ax':
+    """
+    Plot various cumulative sums of different weighting / progress measures.
+    All progress measures must have:
+        - a range between 0 and 1,
+        - the same length
+    """
+    # check range and length
+    prev_length = None
+    if len(cum_sums) == 0:
+        raise ValueError('Nothing to graph!')
+    for name, cum_sum in cum_sums.items():
+        if cum_sum.max() - 1 > EPSILON or abs(cum_sum.min()) > EPSILON: # use EPSILON cause precision
+            import pdb; pdb.set_trace()
+            raise ValueError(f'Invalid range for cumulative measure: {name}_scheme')
+        elif prev_length and len(cum_sum) != prev_length:
+            raise ValueError('Cumulative measures\' lengths do not match!')
+        elif prev_length is None:
+            prev_length = len(cum_sum)
+    if prev_length is None:
+        raise ValueError('Nothing to graph!')
+
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, squeeze=True)
+    ax.set_title(ax_title)
+    ax.plot(pd.Series(range(prev_length)) / (prev_length - 1), label='ground truth')
+    
+    for name, cum_sum in cum_sums.items():
+        ax.plot(cum_sum, label=f'{name} scheme')
+    ax.tick_params(axis='x', rotation=90)
+    ax.legend()
+
+    return fig, ax
+
+def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
+    """
+    Get size of subtree rooted at each node in the tree. 
+    Leaf node has a subtree size
+    Pruned nodes are ignored (considered non-existent)
+
+    :complexity: O(nodes_df.shape[0])
+    """
+    def get_subtree_size(node_id: int) -> int:
+        # recursive function that returns node_id's subtree size
+
+        # base case
+        if nodes_df.loc[node_id, 'Status'] in {0, 1, 3}:
+            return 1 if nodes_df.loc[node_id, 'Status'] in {0, 1} else 0
+
+        count = sum([get_subtree_size(child_id) for child_id in nodes_df[nodes_df['ParentID'].isin({node_id})].index])
+        count += 1
+        nodes_df.loc[node_id, 'SubtreeSize'] = count
+        return count
+
+    nodes_df['SubtreeSize'] = (nodes_df['Status'] <= 1).astype(int)
+    get_subtree_size(0)
+
+def pairwise_diff(lst: list) -> bool:
+    # helper for find_split_variable
+    return len(set(lst)) == len(lst)
+
+def is_unequal_split(nodes_df: int, children_idx: list) -> bool:    
+    # helper for find_split_variable
+    # return whether the split is binary (==, !=) or distribution of values
+    return set(nodes_df.loc[children_idx, 'Label']\
+                   .str.split(' ', expand=True)[1]\
+                   .unique())\
+        == set(['=', '!='])
+
+def find_split_variable(par_idx: int, nodes_df: pd.DataFrame, info_df: pd.DataFrame, mappings: dict={}) -> list:
+    # no goods domains are unreliable (one or more variable should have a null domain)
+    # but the split variable's domain should still be reliable (?)
+    # some split labels are not appearing in the domains and vice versa due to the domains outputing
+    # only certain names in flatzinc, and some variables are never split on but filled by 
+    # propogation
+    # mappings between label_name -> info_name
+    """
+    Given a node, find the split variable among the domains (if possible) that leads to its children
+    """
+    
+    children_idx = nodes_df[nodes_df['ParentID'] == par_idx].index
+    is_skipped = nodes_df[nodes_df['ParentID'] == par_idx]['Status'] == 3
+    cands = []
+    
+    if nodes_df.loc[par_idx, 'Status'] != 2 or len(children_idx) == 0 or is_skipped.sum() == len(children_idx):
+        return []
+    else:
+        label_var = nodes_df.loc[children_idx[0], 'Label'].split(' ')[0]
+        par_domain = parse_info_string(info_df.loc[par_idx, 'Info'])
+        if label_var in mappings:
+            return [mappings[label_var]]
+    
+    if is_skipped.sum() > 0:
+        # we have only one node to rely on to get the split variable
+        child_idx = children_idx[~is_skipped][0]
+        child_domain = parse_info_string(info_df.loc[child_idx, 'Info'])
+        split_val = int(nodes_df.loc[child_idx, 'Label'].split('=')[1])
+        
+        for variable in par_domain:
+            rule_1 = variable in child_domain
+            if '!' in nodes_df.loc[child_idx, 'Label']:
+                # case 1: label != split_val
+                rule_2 = split_val not in child_domain[variable] and \
+                         child_domain[variable].union({split_val}) == par_domain[variable]
+            else:
+                # case 2: label = split_val
+                rule_2 = {split_val} == child_domain[variable] and split_val in par_domain[variable]
+            if rule_1 and rule_2 and variable not in mappings:
+                cands.append(variable)
+                
+    else:
+        split_vals = nodes_df.loc[children_idx, 'Label'].str.split('=', expand=True)[1].astype(int).unique().flatten()
+        children_domain = [
+            parse_info_string(info_df.loc[child_id, 'Info']) for child_id in children_idx
+        ]
+
+        # children domain may include domains of no-goods which are unreliable
+        # for now we ignore this thorny problem
+
+        if not is_unequal_split(nodes_df, children_idx):
+            assert len(split_vals) == len(children_idx)
+            for variable in par_domain:
+                # each child should have a label = split_value
+                rule_1 = all([children_domain[i][variable] == {split_vals[i]} for i in range(len(children_domain))])
+                # all split domains add up to parent
+                rule_2 = set.union(*[children_domain[i][variable] for i in range(len(children_domain))])\
+                            == par_domain[variable]
+                # split values should be different
+                rule_3 = pairwise_diff(split_vals)
+
+                if rule_1 and rule_2 and rule_3:
+                    cands.append(variable)      
+
+        else:
+            assert len(children_domain) == 2
+            assert len(split_vals) == 1
+            split_val = split_vals[0]
+            for variable in par_domain:
+                child_1, child_2 = children_domain
+
+                # case 1: 
+                # child_1 has split_val and child_2 not
+                rule_1 = ({split_val} == child_1[variable]) and (split_val not in child_2[variable])
+                # child_1 + child_2 = par
+                rule_2 = child_2[variable].union({split_val}) == par_domain[variable]
+                # case 2: case 1 but child_1 and child_2 are swapped
+                rule_3 = {split_val} == child_2[variable] and split_val not in child_1[variable]
+                rule_4 = child_1[variable].union({split_val}) == par_domain[variable]
+
+                if (rule_1 and rule_2) or (rule_3 and rule_4):
+                    cands.append(variable)
+
+    # if cand is already set in parent, remove
+    cands = [name for name in cands if not len(par_domain[name]) == 1]
+                    
+    if len(cands) == 1:
+        mappings[label_var] = cands[0]
+        mappings[cands[0]] = label_var
+    return cands
 
 ###################
 #### UNIT TEST ####
@@ -235,10 +379,36 @@ class TestHelperMethods(unittest.TestCase):
         }) 
 
         ordering = make_dfs_ordering(test_df)
-        cumsum = get_cum_weights(test_df, ordering)
+        cumsum = get_cum_weight(test_df, 'NodeWeight', ordering)
 
         self.assertTrue(all(np.abs(cumsum.values - pd.Series([0, 0, 1/9, 2/9, 1/3, 1/3, 2/3, 2/3, 5/6, 5/6, 1])) < EPSILON))
 
+    def test_calculatesubtreesize(self):
+        """
+        Using this random tree:
+                   0
+                  / \   \
+                 1   2   3  
+               / /\  /\  /\
+              4 5 6 7  8 9 10
+                           /\ \
+                         11 12 13
+
+        Where status of the leaf nodes are: {4: 0, 5: 1, 6: 1, 7: 0, 8: 3, 9: 1, 11: 1, 12: 3, 13: 3
+        """
+        test_df = pd.DataFrame({
+            'NodeID': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            'ParentID': [-1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 10, 10, 10],
+            'Alternative': [-1, 0, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0, 1, 2],
+            'NKids': [3, 3, 2, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0],
+            'Status': [2, 2, 2, 2, 0, 1, 1, 0, 3, 1, 2, 1, 3, 3],
+            'NodeWeight': [1, 1/3, 1/3, 1/3, 1/9, 1/9, 1/9, 1/3, 0, 1/6, 1/6, 1/6, 0, 0]
+        })      
+        
+        calculate_subtree_size(test_df)
+        self.assertEqual(test_df['SubtreeSize'].to_list(), [11, 4, 2, 4, 1, 1, 1, 1, 0, 1, 2, 1, 0, 0])
+
+        
 if __name__ == '__main__':
     unittest.main()
 
