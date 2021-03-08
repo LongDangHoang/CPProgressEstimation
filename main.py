@@ -1,13 +1,13 @@
 import pandas as pd
 import os
 
-from sqlalchemy import create_engine
-from typing import List, Callable
-from helper import to_df, make_dfs_ordering, plot_goodness, get_cum_weight
+from typing import List
+from helper import to_df, make_dfs_ordering, plot_goodness, get_cum_weight, to_sqlite
 from tree_weight import assign_weight
 
-def make_graph_from_tree(image_folder: str, tree: str, schemes: List[Callable], 
-        write_to_sqlite: bool=True) -> '(fig, ax), pd.DataFrame, pd.DataFrame dict[str, pd.Series]':
+def make_graph_from_tree(image_folder: str, tree: str,
+        schemes: List[str], write_to_sqlite: bool=True, 
+        save_image: bool=True, **kwargs) -> '(fig, ax), pd.DataFrame, pd.DataFrame dict[str, pd.Series]':
     """
     Make a graph comparing all weighting schemes for a given tree
 
@@ -30,11 +30,11 @@ def make_graph_from_tree(image_folder: str, tree: str, schemes: List[Callable],
         nodes_df.loc[:, 'DFSOrdering'] = nodes_df['DFSOrdering'].astype(int)
 
     for scheme in schemes:
-        scheme_name = scheme.__name__.split('_')[0]
+        scheme_name = scheme.split('_')[0]
         weight_col = scheme_name[0].upper() + scheme_name[1:] + 'NodeWeight'
         
         if weight_col not in nodes_df.columns:
-            assign_weight(nodes_df, scheme, weight_colname=weight_col, info_df=info_df)
+            assign_weight(nodes_df, scheme, weight_colname=weight_col, info_df=info_df, **kwargs)
         cum_sums[scheme_name] = get_cum_weight(nodes_df, weight_col, dfs_ordering)
 
   
@@ -44,12 +44,7 @@ def make_graph_from_tree(image_folder: str, tree: str, schemes: List[Callable],
 
     if write_to_sqlite:
         # write to sqlite file so we do not waste time recomputing
-        engine = create_engine('sqlite:///' + tree)
-        strict_order = ['NodeID', 'ParentID', 'Alternative', 'NKids', 'Status', 'Label']
-        column_order =          strict_order + \
-                       sorted(list(set(nodes_df.reset_index().columns) - set(strict_order)))
-        write_df = nodes_df.reset_index().reindex(columns=column_order)
-        write_df.to_sql('Nodes', engine, if_exists='replace', index=False)
+        to_sqlite(nodes_df, tree)
     
     fig.show()
 

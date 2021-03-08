@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import unittest
 
 from itertools import chain
+from sqlalchemy import create_engine
 
 EPSILON = 10e-7
 
@@ -33,6 +34,19 @@ def to_df(file: str, table: str) -> pd.DataFrame:
     result_df = pd.read_sql_query(query, conn)
     conn.close()
     return result_df
+
+def to_sqlite(nodes_df: pd.DataFrame, tree: str) -> None:
+    """
+    Write dataframe to sqlite and ensure readability by
+    MiniZinc
+    """
+    engine = create_engine('sqlite:///' + tree)
+    strict_order = ['NodeID', 'ParentID', 'Alternative', 'NKids', 'Status', 'Label']
+    column_order =          strict_order + \
+                    sorted(list(set(nodes_df.reset_index().columns) - set(strict_order)))
+    write_df = nodes_df.sort_values('NodeID').reset_index()\
+                       .reindex(columns=column_order)
+    write_df.to_sql('Nodes', engine, if_exists='replace', index=False)
 
 def parse_info_string(node_info: str) -> dict:
     """
@@ -200,88 +214,83 @@ def is_unequal_split(nodes_df: int, children_idx: list) -> bool:
                    .unique())\
         == set(['=', '!='])
 
-def find_split_variable(par_idx: int, nodes_df: pd.DataFrame, info_df: pd.DataFrame, mappings: dict={}) -> list:
-    # no goods domains are unreliable (one or more variable should have a null domain)
+def find_split_variable(par_idx: int, nodes_df: pd.DataFrame, 
+            info_df: pd.DataFrame, mappings: dict={}) -> list:
+    # 1. no goods domains are unreliable (one or more variable should have a null domain)
     # but the split variable's domain should still be reliable (?)
-    # some split labels are not appearing in the domains and vice versa due to the domains outputing
+    # 2. some split labels are not appearing in the domains and vice versa due to the domains outputing{}
     # only certain names in flatzinc, and some variables are never split on but filled by 
     # propogation
-    # mappings between label_name -> info_name
+    # 3. if sum of two children domains do not add up to parent, is it a split variable?
+    # 4. is it true that mappings are unique, aka we can reuse it and not that a new introduced variables is used later?
+    # 5. no good can have none label too, occurs when earlier sibling is a split node, and thus has already been fully explored. Apparently
+    # the label isn't remembered after that much time
+    # 6. the != sign of the unequal split sometimes has an assigned value, i.e. they don't necessarily add up to parent
     """
     Given a node, find the split variable among the domains (if possible) that leads to its children
     """
     
     children_idx = nodes_df[nodes_df['ParentID'] == par_idx].index
-    is_skipped = nodes_df[nodes_df['ParentID'] == par_idx]['Status'] == 3
+    if len(children_idx) <= 1: # can't find split_variable in this case, and does not need to
+        return [], mappings, None, None
+    
+    label_var = nodes_df.loc[children_idx[0], 'Label'].split(' ')[0]
+    par_domain = parse_info_string(info_df.loc[par_idx, 'Info'])
+    children_domain = [
+        parse_info_string(info_df.loc[child_id, 'Info']) for child_id in children_idx
+    ]
+
+    if label_var in mappings: # find in dictionary first
+        return [mappings[label_var]], mappings, par_domain, children_domain
+
+    split_vals = nodes_df.loc[children_idx, 'Label']\
+                        .str.split('=', expand=True)[1]
+    
+    # if no good has no label, we expect it to be an unequal split
+    if split_vals.isna().sum() > 0:
+        assert len(children_idx) == 2 and len(split_vals) == 2
+        assert split_vals.isna().values[1] == True # we also expect the nogood no label to be the second child 
+        split_vals = [int(split_vals.values[0])] # account for nogoods with no labels
+        uneq_split = True
+    else:
+        split_vals = split_vals.astype(int).unique().flatten()
+        uneq_split = is_unequal_split(nodes_df, children_idx)
     cands = []
-    
-    if nodes_df.loc[par_idx, 'Status'] != 2 or len(children_idx) == 0 or is_skipped.sum() == len(children_idx):
-        return []
-    else:
-        label_var = nodes_df.loc[children_idx[0], 'Label'].split(' ')[0]
-        par_domain = parse_info_string(info_df.loc[par_idx, 'Info'])
-        if label_var in mappings:
-            return [mappings[label_var]]
-    
-    if is_skipped.sum() > 0:
-        # we have only one node to rely on to get the split variable
-        child_idx = children_idx[~is_skipped][0]
-        child_domain = parse_info_string(info_df.loc[child_idx, 'Info'])
-        split_val = int(nodes_df.loc[child_idx, 'Label'].split('=')[1])
-        
+
+    # children domain may include domains of no-goods which are unreliable
+    # for now we ignore this thorny problem
+
+    if not uneq_split:
+        assert len(split_vals) == len(children_idx)
         for variable in par_domain:
-            rule_1 = variable in child_domain
-            if '!' in nodes_df.loc[child_idx, 'Label']:
-                # case 1: label != split_val
-                rule_2 = split_val not in child_domain[variable] and \
-                         child_domain[variable].union({split_val}) == par_domain[variable]
-            else:
-                # case 2: label = split_val
-                rule_2 = {split_val} == child_domain[variable] and split_val in par_domain[variable]
-            if rule_1 and rule_2 and variable not in mappings:
-                cands.append(variable)
-                
+            # each child should have a label = split_value
+            rule_1 = all([children_domain[i][variable] == {split_vals[i]} for i in range(len(children_domain))])
+            # all split domains add up to parent
+            rule_2 = set.union(*[children_domain[i][variable] for i in range(len(children_domain))])\
+                        == par_domain[variable]
+            # split values should be different
+            rule_3 = pairwise_diff(split_vals)
+
+            if rule_1 and rule_2 and rule_3:
+                cands.append(variable)      
     else:
-        split_vals = nodes_df.loc[children_idx, 'Label'].str.split('=', expand=True)[1].astype(int).unique().flatten()
-        children_domain = [
-            parse_info_string(info_df.loc[child_id, 'Info']) for child_id in children_idx
-        ]
+        assert len(children_domain) == 2
+        assert len(split_vals) == 1
+        split_val = split_vals[0]
+        for variable in par_domain:
+            child_1, child_2 = children_domain
+            # find child with equal sign and child with not equal sign
+            child_eq, child_no = (child_1, child_2) if '!' not in nodes_df.loc[children_idx[0], 'Label'] \
+                                        else (child_2, child_1)
 
-        # children domain may include domains of no-goods which are unreliable
-        # for now we ignore this thorny problem
+            # case 1: 
+            # child_eq has split_val and child_no not
+            rule_1 = ({split_val} == child_eq[variable]) and (split_val not in child_no[variable])
+            # child_1 + child_2 = par
+            rule_2 = child_no[variable].union({split_val}) == par_domain[variable]
 
-        if not is_unequal_split(nodes_df, children_idx):
-            assert len(split_vals) == len(children_idx)
-            for variable in par_domain:
-                # each child should have a label = split_value
-                rule_1 = all([children_domain[i][variable] == {split_vals[i]} for i in range(len(children_domain))])
-                # all split domains add up to parent
-                rule_2 = set.union(*[children_domain[i][variable] for i in range(len(children_domain))])\
-                            == par_domain[variable]
-                # split values should be different
-                rule_3 = pairwise_diff(split_vals)
-
-                if rule_1 and rule_2 and rule_3:
-                    cands.append(variable)      
-
-        else:
-            assert len(children_domain) == 2
-            assert len(split_vals) == 1
-            split_val = split_vals[0]
-            for variable in par_domain:
-                child_1, child_2 = children_domain
-
-                # case 1: 
-                # child_1 has split_val and child_2 not
-                rule_1 = ({split_val} == child_1[variable]) and (split_val not in child_2[variable])
-                # child_1 + child_2 = par
-                rule_2 = child_2[variable].union({split_val}) == par_domain[variable]
-                # case 2: case 1 but child_1 and child_2 are swapped
-                rule_3 = {split_val} == child_2[variable] and split_val not in child_1[variable]
-                rule_4 = child_1[variable].union({split_val}) == par_domain[variable]
-
-                if (rule_1 and rule_2) or (rule_3 and rule_4):
-                    cands.append(variable)
+            if (rule_1 and rule_2):
+                cands.append(variable)
 
     # if cand is already set in parent, remove
     cands = [name for name in cands if not len(par_domain[name]) == 1]
@@ -289,7 +298,8 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame, info_df: pd.DataFr
     if len(cands) == 1:
         mappings[label_var] = cands[0]
         mappings[cands[0]] = label_var
-    return cands
+    
+    return cands, mappings, par_domain, children_domain
 
 ###################
 #### UNIT TEST ####
