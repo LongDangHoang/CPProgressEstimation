@@ -9,11 +9,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import unittest
+import os
 
 from itertools import chain
 from sqlalchemy import create_engine
 
-EPSILON = 10e-7
+EPSILON = 1e-4
 
 def to_df(file: str, table: str) -> pd.DataFrame:
     
@@ -47,6 +48,15 @@ def to_sqlite(nodes_df: pd.DataFrame, tree: str) -> None:
     write_df = nodes_df.sort_values('NodeID').reset_index()\
                        .reindex(columns=column_order)
     write_df.to_sql('Nodes', engine, if_exists='replace', index=False)
+
+def get_all_trees(benchmark_folder: str) -> list:
+    """
+    Return list of string paths to all sqlite files
+    """
+    trees = []
+    for root, dirs, files in os.walk(benchmark_folder):
+        trees.extend([os.path.join(root, name) for name in files if '.sqlite' in names])
+    return trees
 
 def parse_info_string(node_info: str) -> dict:
     """
@@ -187,6 +197,7 @@ def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
 
     :complexity: O(nodes_df.shape[0])
     """
+
     def get_subtree_size(node_id: int) -> int:
         # recursive function that returns node_id's subtree size
 
@@ -241,17 +252,22 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
     ]
 
     if label_var in mappings: # find in dictionary first
-        return [mappings[label_var]], mappings, par_domain, children_domain
+        if mappings[label_var] in par_domain: # sometimes csv compiled file do not match actual label
+            return [mappings[label_var]], mappings, par_domain, children_domain
 
     split_vals = nodes_df.loc[children_idx, 'Label']\
                         .str.split('=', expand=True)[1]
     
-    # if no good has no label, we expect it to be an unequal split
+    # if no good has no label,
     if split_vals.isna().sum() > 0:
-        assert len(children_idx) == 2 and len(split_vals) == 2
-        assert split_vals.isna().values[1] == True # we also expect the nogood no label to be the second child 
-        split_vals = [int(split_vals.values[0])] # account for nogoods with no labels
-        uneq_split = True
+        if len(children_idx) == 2: # we expect unequal split if two children
+            assert len(split_vals) == 2
+            assert split_vals.isna().values[1] == True # we also expect the nogood no label to be the second child 
+            split_vals = [int(split_vals.values[0])] # account for nogoods with no labels
+            uneq_split = True
+        else: # we expect equal split if more children
+            # we cannot expect to find a split variable
+            return [], mappings, None, None
     else:
         split_vals = split_vals.astype(int).unique().flatten()
         uneq_split = is_unequal_split(nodes_df, children_idx)
@@ -333,11 +349,11 @@ class TestHelperMethods(unittest.TestCase):
         info_dict = parse_info_string(test_infostring)
         self.assertEqual(len(info_dict), 5)
         self.assertEqual(set(info_dict.keys()), {'VAR_2', 'VAR_3', 'X_INTRODUCED_1_', 'X_INTRODUCED_2_', 'X_INTRODUCED_4_'})
-        self.assertEqual(set(info_dict['VAR_2'].values), set([range(13, 80)]))
-        self.assertEqual(set(info_dict['VAR_3'].values), set([range(30, 39), range(50, 58)]))
-        self.assertEqual(set(info_dict['X_INTRODUCED_1_'].values), set([range(0, 1)]))
-        self.assertEqual(set(info_dict['X_INTRODUCED_2_'].values), set([range(3, 24)]))
-        self.assertEqual(set(info_dict['X_INTRODUCED_4_'].values), set([range(5, 26)]))
+        self.assertEqual(info_dict['VAR_2'], set(range(13, 80)))
+        self.assertEqual(info_dict['VAR_3'], set(range(30, 39)).union(range(50, 58)))
+        self.assertEqual(info_dict['X_INTRODUCED_1_'], set(range(0, 1)))
+        self.assertEqual(info_dict['X_INTRODUCED_2_'], set(range(3, 24)))
+        self.assertEqual(info_dict['X_INTRODUCED_4_'], set(range(5, 26)))
         self.assertEqual(sum([len(x) for x in info_dict.values()]), 1 + 9 + 8 + 67 + 21 + 21)
     
     def test_makedfsordering(self):
