@@ -9,7 +9,7 @@ import scipy.sparse as sparse
 # import logging
 
 from multiprocessing import Pool, Array
-from helper import get_domain_size, find_split_variable, EPSILON
+from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, EPSILON
 from pathlib import Path
 from os import cpu_count
 
@@ -20,6 +20,7 @@ from typing import List
 ###########################
 
 SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme'}
+PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme'}
 
 def make_weight_scheme(scheme_name: str, **kwargs):
 
@@ -35,9 +36,6 @@ def make_weight_scheme(scheme_name: str, **kwargs):
 class UniformScheme():
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame, **kwargs) -> List[float]:
         """ Assign uniform weights for a node's children """
-
-        if nodes_df['Status'].isin([3]).sum() > 0:
-            raise ValueError('Nodes_df must consist only of valid nodes')
         
         num_kids = nodes_df[nodes_df['ParentID'].isin([node_id])].shape[0]
         weights = [1 / num_kids] * num_kids
@@ -47,7 +45,7 @@ class UniformScheme():
 
 class DomainScheme():
 
-    def __init__(self, info_df: pd.DataFrame=None):
+    def __init__(self, info_df: pd.DataFrame=None, **kwargs):
         if info_df is None:
             raise ValueError("No information on nodes given!")
         elif info_df.index.name != 'NodeID':
@@ -57,9 +55,6 @@ class DomainScheme():
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """ Assign weights based on domain's sizes for a node's children, ignoring restart nodes """
-
-        if nodes_df['Status'].isin([3]).sum() > 0:
-            raise ValueError('Nodes_df must consist only of valid node')
 
         kids = nodes_df[nodes_df['ParentID'] == node_id]
         domains = self.info_df.loc[kids.index, 'Info'].apply(get_domain_size)
@@ -95,9 +90,6 @@ class SearchSpaceScheme():
         Assign weights as percentage of parent's domain
         """
 
-        if nodes_df['Status'].isin([3]).sum() > 0:
-            raise ValueError('Nodes_df must consist only of valid nodes')
-
         kids = nodes_df[nodes_df['ParentID'] == node_id]
         cands, mappings, par_domain, children_domain = find_split_variable(node_id, nodes_df, self.info_df, self.mappings)
 
@@ -110,31 +102,34 @@ class SearchSpaceScheme():
         else:
             # use uniform
             weights = [1 / kids.shape[0]] * kids.shape[0]
-
+        
         # assert abs(1 - sum(weights)) < EPSILON, 'Sum of weights not close to 1!'
         return weights
 
 class SubtreeSizeScheme():
 
-    def __init__(self, assign_in_dfs_order: bool=False, decay_rate: float=0.7, **kwargs):
+    def __init__(self, assign_in_dfs_order: bool=False, decay_rate: float=0.5, 
+                nodes_df: pd.DataFrame=None, tree: str=None, **kwargs):
         
         if assign_in_dfs_order is False:
             raise ValueError('Cannot use subtree size scheme if not assigning weights in DFS ordering')
-        
+        elif nodes_df is None:
+            raise ValueError('Cannot use substree size scheme without nodes_df initializer')
+
+        if 'SubtreeSize' not in nodes_df.columns:
+            calculate_subtree_size(nodes_df)
+            if tree:
+                to_sqlite(nodes_df, tree)
+
         self.characteristic_w = 1 # initialize the characteristic weight that describes distribution of subtree sizes
         self.previous_root = -1 # initlaize the previous root
-        self.path = [] # track path to current node
+        self.path = [] # track path to current nodeassign_in_dfs_order
         self.decay_rate = decay_rate
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """
         Assign weight based on characteristic weight of siblings' subtree sizes
         """
-
-        if nodes_df['Status'].isin([3]).sum() > 0:
-            raise ValueError('Nodes_df must consist only of valid nodes')
-        elif 'SubtreeSize' not in nodes_df.columns:
-            raise ValueError('Nodes_df must containt subtree size column')
 
         if self.previous_root != nodes_df.loc[node_id, 'ParentID']:
             # we have moved to a different subtree than previous node,
@@ -208,8 +203,6 @@ def make_weight_parallel(j: int, use_parallel: bool=False):
         child_id = children.index[i]
         parallel_matrix['data'][child_id] = weights[i]
         parallel_matrix['row'][child_id] = j
-    
-    
         
 def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str, 
         weight_colname: str='NodeWeight',
@@ -226,11 +219,11 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         - kwargs: keyword arguments required for the weight scheme
     """
     
+    ws = make_weight_scheme(weight_scheme, assign_in_dfs_order=assign_in_dfs_order, nodes_df=nodes_df, **kwargs)
     nodes_df[weight_colname] = 0
     invalid_status = [3] # pruned nodes that are jumped over without being considered
     valid_df = pd.DataFrame.copy(nodes_df[~nodes_df['Status'].isin(invalid_status)])
     valid_df.loc[0, weight_colname] = 1 # root node has weight 1
-    ws = make_weight_scheme(weight_scheme, assign_in_dfs_order=assign_in_dfs_order, **kwargs)
 
     if assign_in_dfs_order:
         assert 'DFSOrdering' in valid_df.columns
@@ -239,7 +232,7 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         index_lst = valid_df[valid_df['NKids'] > 0].index
     
     # propogate weights down
-    if not use_parallel:
+    if not use_parallel or weight_scheme not in PARALLEL_SAFE:
         for j in index_lst:
             par_weight = valid_df.loc[j, weight_colname]
             children = valid_df[valid_df['ParentID'].isin([j])]

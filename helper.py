@@ -137,6 +137,34 @@ def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     assert set(dfs_ordering) == (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index))
     return dfs_ordering
 
+def make_post_ordering(nodes_df: pd.DataFrame, node_id: int=0, post_ordering: list=None) -> list:
+    """
+    Return list of node ids in post order, i.e. left subtree - right subtree - root
+
+    We ignored restart nodes.
+    """
+    if post_ordering is None:
+        post_ordering = []
+
+    # base case: current node is a leaf
+    if nodes_df.loc[node_id, 'Status'] in {0, 1}:
+        post_ordering.append(node_id)
+        return post_ordering
+
+    # else, travel through children
+    children = nodes_df[(nodes_df['ParentID'] == node_id) & (nodes_df['Status'] != 3)]\
+                .sort_values('Alternative', ascending=True).index
+    
+    # run recursive algorithm
+    for child in children:
+        make_post_ordering(nodes_df, child, post_ordering)
+    post_ordering.append(node_id)
+
+    if len(post_ordering) == len(nodes_df[nodes_df['Status'] != 3]):
+        assert set(post_ordering) == (set(nodes_df[nodes_df['Status'] != 3].index))
+    
+    return post_ordering
+
 def get_cum_weight(nodes_df: pd.DataFrame, weight_column: str, ordering: list) -> pd.Series:
     """
     Calculate cumulative sum according to an ordering using weight_column
@@ -323,15 +351,48 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
 
 class TestHelperMethods(unittest.TestCase):
 
+    def setUp(self):
+        """
+        Using this random tree:
+                   0
+                  / \   \
+                 1   2   3  
+               / /\  /\  /\
+              4 5 6 7  8 9 10
+                           /\ \
+                         11 12 13
+
+        Where status of the leaf nodes are: {4: 0, 5: 1, 6: 1, 7: 0, 8: 3, 9: 1, 11: 1, 12: 3, 13: 3}
+
+        Inorder (Visit order): 0, 1, 4, 5, 6, 2, 7, 3, 9, 10, 11
+        Postorder (Finish order): 4, 5, 6, 1, 7, 2, 9, 11, 10, 3, 0
+
+        """
+
+        self.test_df = test_df = pd.DataFrame({
+            'NodeID': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+            'ParentID': [-1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 10, 10, 10],
+            'Alternative': [-1, 0, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0, 1, 2],
+            'NKids': [3, 3, 2, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0],
+            'Status': [2, 2, 2, 2, 0, 1, 1, 0, 3, 1, 2, 1, 3, 3],
+            'Label': ['' for _ in range(14)],
+            'NodeWeight': [1, 1/3, 1/3, 1/3, 1/9, 1/9, 1/9, 1/3, 0, 1/6, 1/6, 1/6, 0, 0]
+
+        })
+
+
     def test_todict(self):
         k = to_df('./benchmark_models/golomb/trees/04.sqlite', 'nodes')
         self.assertEqual(k.loc[0, 'NodeID'], 0)
         self.assertEqual(k.shape[0], 36)
         self.assertTrue(all([k.loc[idx, 'NodeID'] == idx for idx in range(k.shape[0])]))
         self.assertEqual(k.loc[26, 'Status'], 0)
-        self.assertEqual(
-            {'NodeID', 'Status', 'NKids', 'ParentID', 'Alternative', 'Label'},
-            set(k.columns)
+        
+        correct_order = ['NodeID', 'ParentID', 'Alternative', 'NKids', 'Status', 'Label']
+
+        self.assertTrue(len(k.columns) >= len(correct_order))
+        self.assertTrue(
+            k.columns.to_list()[:len(correct_order)] == correct_order
         )
 
     def test_parseinfostring(self):
@@ -358,82 +419,32 @@ class TestHelperMethods(unittest.TestCase):
     
     def test_makedfsordering(self):
         """
-        Using this random tree:
-                   0
-                  / \   \
-                 1   2   3  
-               / /\  /\  /\
-              4 5 6 7  8 9 10
-                           /\ \
-                         11 12 13
-
-        Where status of the leaf nodes are: {4: 0, 5: 1, 6: 1, 7: 0, 8: 3, 9: 1, 11: 1, 12: 3, 13: 3}
+        Use above random tree
         """
 
-        test_df = pd.DataFrame({
-            'NodeID': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-            'ParentID': [-1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 10, 10, 10],
-            'Alternative': [-1, 0, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0, 1, 2],
-            'NKids': [3, 3, 2, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0],
-            'Status': [2, 2, 2, 2, 0, 1, 1, 0, 3, 1, 2, 1, 3, 3]
-        }) 
-
-        ordering = make_dfs_ordering(test_df)
+        ordering = make_dfs_ordering(self.test_df)
         self.assertEqual(ordering, [0, 1, 4, 5, 6, 2, 7, 3, 9, 10, 11])
 
     def test_getcumweight(self):
         """
-        Using this random tree:
-                   0
-                  / \   \
-                 1   2   3  
-               / /\  /\  /\
-              4 5 6 7  8 9 10
-                           /\ \
-                         11 12 13
-
-        Where status of the leaf nodes are: {4: 0, 5: 1, 6: 1, 7: 0, 8: 3, 9: 1, 11: 1, 12: 3, 13: 3}
+        Use above random tree
         """
         
-        test_df = pd.DataFrame({
-            'NodeID': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-            'ParentID': [-1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 10, 10, 10],
-            'Alternative': [-1, 0, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0, 1, 2],
-            'NKids': [3, 3, 2, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0],
-            'Status': [2, 2, 2, 2, 0, 1, 1, 0, 3, 1, 2, 1, 3, 3],
-            'NodeWeight': [1, 1/3, 1/3, 1/3, 1/9, 1/9, 1/9, 1/3, 0, 1/6, 1/6, 1/6, 0, 0]
-        }) 
-
-        ordering = make_dfs_ordering(test_df)
-        cumsum = get_cum_weight(test_df, 'NodeWeight', ordering)
+        ordering = make_dfs_ordering(self.test_df)
+        cumsum = get_cum_weight(self.test_df, 'NodeWeight', ordering)
 
         self.assertTrue(all(np.abs(cumsum.values - pd.Series([0, 0, 1/9, 2/9, 1/3, 1/3, 2/3, 2/3, 5/6, 5/6, 1])) < EPSILON))
 
     def test_calculatesubtreesize(self):
         """
-        Using this random tree:
-                   0
-                  / \   \
-                 1   2   3  
-               / /\  /\  /\
-              4 5 6 7  8 9 10
-                           /\ \
-                         11 12 13
-
-        Where status of the leaf nodes are: {4: 0, 5: 1, 6: 1, 7: 0, 8: 3, 9: 1, 11: 1, 12: 3, 13: 3
+        Use above random tree
         """
-        test_df = pd.DataFrame({
-            'NodeID': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-            'ParentID': [-1, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 10, 10, 10],
-            'Alternative': [-1, 0, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0, 1, 2],
-            'NKids': [3, 3, 2, 2, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0],
-            'Status': [2, 2, 2, 2, 0, 1, 1, 0, 3, 1, 2, 1, 3, 3],
-            'NodeWeight': [1, 1/3, 1/3, 1/3, 1/9, 1/9, 1/9, 1/3, 0, 1/6, 1/6, 1/6, 0, 0]
-        })      
-        
-        calculate_subtree_size(test_df)
-        self.assertEqual(test_df['SubtreeSize'].to_list(), [11, 4, 2, 4, 1, 1, 1, 1, 0, 1, 2, 1, 0, 0])
+        calculate_subtree_size(self.test_df)
+        self.assertEqual(self.test_df['SubtreeSize'].to_list(), [11, 4, 2, 4, 1, 1, 1, 1, 0, 1, 2, 1, 0, 0])
 
+    def test_makepostordering(self):
+        ordering = make_post_ordering(self.test_df)
+        self.assertEqual(ordering, [4, 5, 6, 1, 7, 2, 9, 11, 10, 3, 0])
         
 if __name__ == '__main__':
     unittest.main()
