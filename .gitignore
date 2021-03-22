@@ -9,3 +9,4 @@ __pycache__/
 # trees files cause they are too heavy
 
 trees/
+testground.ipynb
