@@ -1,4 +1,5 @@
 import pandas as pd
+import traceback
 import os
 
 from helper import to_df, make_dfs_ordering, plot_goodness, get_cum_weight, to_sqlite
@@ -51,9 +52,10 @@ def make_graph_from_tree(tree: str,
                     use_parallel=use_parallel
                 )
             cum_sums[scheme_name] = get_cum_weight(nodes_df, weight_col, dfs_ordering)
-        except Exception:
+        except Exception as e:
             # we want to move on as only one scheme may fail
             print(f"{scheme} computation fails! Moving on to next scheme...")
+            traceback.print_exc()
             # reset all variables related to that schemenodes_df
             nodes_df = nodes_df[orig_cols]
             if scheme_name in cum_sums:

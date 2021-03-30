@@ -19,7 +19,7 @@ from typing import List
 #### WEIGHTING SCHEMES ####
 ###########################
 
-SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme'}
+SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme', 'true_scheme'}
 PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme'}
 
 def make_weight_scheme(scheme_name: str, **kwargs):
@@ -32,6 +32,33 @@ def make_weight_scheme(scheme_name: str, **kwargs):
         return SearchSpaceScheme(**kwargs)
     elif scheme_name.upper() == 'SUBTREESIZE_SCHEME':
         return SubtreeSizeScheme(**kwargs)
+    elif scheme_name.upper() == 'TRUE_SCHEME':
+        return TrueScheme(**kwargs)
+
+class TrueScheme():
+    """
+    Mainly scheme to test correctness of methods
+    Value computed should match true tree completion rate exactly
+    """
+
+    def __init__(self, nodes_df: pd.DataFrame=None, tree: str=None, **kwargs):
+        
+        if nodes_df is None:
+            raise ValueError('Cannot calculate true scheme without nodes_df')
+
+        if 'SubtreeSize' not in nodes_df.columns:
+            calculate_subtree_size(nodes_df)
+            if tree:
+                to_sqlite(nodes_df, tree)
+
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+
+        kids = nodes_df[nodes_df['ParentID'] == node_id]
+        weights = kids['SubtreeSize'] / (nodes_df.loc[node_id, 'SubtreeSize'] - 1) # subtree size include the root node
+        
+        assert abs(1 - sum(weights)) < EPSILON, 'Sum of weights not close to 1!'
+        return weights
+
 
 class UniformScheme():
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame, **kwargs) -> List[float]:
@@ -267,7 +294,8 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
             pool.map(make_weight_parallel, index_lst)
         finally:
             pool.close()
-            
+
+        # rows are parent, columns are node ids, data is weight of child for parent
         weights = sparse.csr_matrix((parallel_matrix['data'], (parallel_matrix['row'], range(nodes_df.shape[0]))), 
                     shape=(nodes_df.shape[0], nodes_df.shape[0]))
         running = weights
@@ -277,6 +305,8 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
             col = temp.col[temp.data > 0]
             valid_df.loc[col, weight_colname] = temp.data[temp.data > 0]
             running = running * weights
+
+        valid_df.loc[0, weight_colname] = 1
         
         del parallel_matrix
         del wa_state # free up memory
