@@ -20,7 +20,9 @@ from typing import List
 ###########################
 
 SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme', 'true_scheme'}
-PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme'}
+PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme', 'true_scheme', 
+    'zero_scheme', 'test_scheme', 'one_scheme', 'sumK_scheme'
+}
 
 def make_weight_scheme(scheme_name: str, **kwargs):
 
@@ -34,11 +36,23 @@ def make_weight_scheme(scheme_name: str, **kwargs):
         return SubtreeSizeScheme(**kwargs)
     elif scheme_name.upper() == 'TRUE_SCHEME':
         return TrueScheme(**kwargs)
+    elif scheme_name.upper() == 'ZERO_SCHEME':
+        return ZeroScheme()
+    elif scheme_name.upper() == 'TEST_SCHEME':
+        return TestScheme(**kwargs)
+    elif scheme_name.upper() == 'ONE_SCHEME':
+        return OneScheme()
+    elif scheme_name.upper() == 'SUMK_SCHEME':
+        return SumKScheme(**kwargs)
+
+##################
+## TEST SCHEMES ##
+##################
 
 class TrueScheme():
     """
     Mainly scheme to test correctness of methods
-    Value computed should match true tree completion rate exactly
+    Value computed should match true subtree size absolutely
     """
 
     def __init__(self, nodes_df: pd.DataFrame=None, tree: str=None, **kwargs):
@@ -59,6 +73,55 @@ class TrueScheme():
         assert abs(1 - sum(weights)) < EPSILON, 'Sum of weights not close to 1!'
         return weights
 
+class ZeroScheme():
+    """
+    Mainly scheme to test correctness of methods
+    Value computed should all be 0
+    """
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+        return [0] * (nodes_df['ParentID'] == node_id).sum()
+
+class OneScheme():
+    """
+    All children's weights are identical to parent's
+    """
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+        return [1] * (nodes_df['ParentID'] == node_id).sum()
+
+class TestScheme():
+    """
+    Reversed test case where weights are assigned to match randomly assigned node weights
+    Value computed should match randomly assigned node weights
+    """
+
+    def __init__(self, nodes_df: pd.DataFrame=None, **kwargs):
+
+        if 'RandomTrueNodeWeight' not in nodes_df.columns:
+            nodes_df['RandomTrueNodeWeight'] = np.random.random(len(nodes_df))
+            nodes_df.loc[0, 'RandomTrueNodeWeight'] = 1
+
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+        kids = nodes_df[nodes_df['ParentID'] == node_id]
+        par_w = nodes_df.loc[node_id, 'RandomTrueNodeWeight']
+        return (kids['RandomTrueNodeWeight'] / par_w).values
+
+class SumKScheme():
+    """
+    Sum of children is k times parent's weight, where
+    k is random posi    d   tive float
+    """
+    def __init__(self, k: float=None, **kwargs):
+        assert 1 >= k >= 0
+        self.k = k
+    
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+        num_kids = (nodes_df['ParentID'] == node_id).sum()
+        weights = np.random.random(num_kids)
+        return weights + (self.k / num_kids) - np.mean(weights) # average to self.k / num_kids
+
+####################
+## WEIGHT SCHEMES ##
+####################
 
 class UniformScheme():
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame, **kwargs) -> List[float]:
@@ -221,7 +284,7 @@ def make_weight_parallel(j: int, use_parallel: bool=False):
     if children.shape[0] == 0:
         return
 
-    weights = ws.get_weight(j, valid_df)
+    weights = np.array(ws.get_weight(j, valid_df))
     # print(f"At node {j}, weights retrieved are {list(weights)}")
     assert len(weights) == children.shape[0]
 
@@ -259,13 +322,13 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         index_lst = valid_df[valid_df['NKids'] > 0].index
     
     # propogate weights down
-    if not use_parallel or weight_scheme not in PARALLEL_SAFE:
+    if weight_scheme not in PARALLEL_SAFE or not use_parallel:
         for j in index_lst:
             par_weight = valid_df.loc[j, weight_colname]
             children = valid_df[valid_df['ParentID'].isin([j])]
 
             if children.shape[0] == 0:
-                return
+                continue
 
             weights = ws.get_weight(j, valid_df)
             # print(f"At node {j}, weights retrieved are {list(weights)}")
@@ -299,11 +362,12 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         weights = sparse.csr_matrix((parallel_matrix['data'], (parallel_matrix['row'], range(nodes_df.shape[0]))), 
                     shape=(nodes_df.shape[0], nodes_df.shape[0]))
         running = weights
-        
-        while np.any((running[0] > 0).data):
+
+        # > 0 works for normal weight, but test weighting schemes include negative weights
+        while np.any((running[0] != 0).data):
             temp = running[0].tocoo()
-            col = temp.col[temp.data > 0]
-            valid_df.loc[col, weight_colname] = temp.data[temp.data > 0]
+            col = temp.col[temp.data != 0]
+            valid_df.loc[col, weight_colname] = temp.data[temp.data != 0]
             running = running * weights
 
         valid_df.loc[0, weight_colname] = 1

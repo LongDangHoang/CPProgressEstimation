@@ -76,7 +76,7 @@ def make_graph_from_tree(tree: str,
 if __name__ == '__main__':
     
     image_folder = 'graphs/'
-    tree = 'benchmark_models/mario/trees/mario_easy_4.sqlite'
+    tree = 'benchmark_models/mario/trees/mario_easy_3.sqlite'
     make_graph_from_tree(
         tree, 
         schemes=[
@@ -86,7 +86,10 @@ if __name__ == '__main__':
             'subtreeSize_scheme'
         ],
         forced_recompute=[
-            'subtreeSize_scheme'
+            'subtreeSize_scheme',
+            'uniform_scheme',
+            'domain_scheme',
+            'searchSpace_scheme'
         ],
         write_to_sqlite=True,
         image_folder=image_folder,

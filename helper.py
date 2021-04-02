@@ -380,7 +380,6 @@ class TestHelperMethods(unittest.TestCase):
 
         })
 
-
     def test_todict(self):
         k = to_df('./benchmark_models/golomb/trees/04.sqlite', 'nodes')
         self.assertEqual(k.loc[0, 'NodeID'], 0)
@@ -442,10 +441,25 @@ class TestHelperMethods(unittest.TestCase):
         calculate_subtree_size(self.test_df)
         self.assertEqual(self.test_df['SubtreeSize'].to_list(), [11, 4, 2, 4, 1, 1, 1, 1, 0, 1, 2, 1, 0, 0])
 
-    def test_makepostordering(self):
-        ordering = make_post_ordering(self.test_df)
-        self.assertEqual(ordering, [4, 5, 6, 1, 7, 2, 9, 11, 10, 3, 0])
+    # def test_makepostordering(self):
+    #     ordering = make_post_ordering(self.test_df)
+    #     self.assertEqual(ordering, [4, 5, 6, 1, 7, 2, 9, 11, 10, 3, 0])
         
+    def find_split_variable(self):
+        # use the test tree: mario_easy_3
+
+        tree = 'benchmark_models/mario/trees/mario_easy_3.sqlite'
+        info_df = to_df(tree, 'info').set_index('NodeID')
+        nodes_df = to_df(tree, 'nodes').set_index('NodeID')
+
+        assert 'X_INTRODUCED_0_' == find_split_variable(0, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_2_' == find_split_variable(1, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_0_' == find_split_variable(2, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_3_' == find_split_variable(3, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_2_' == find_split_variable(25299, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_11_' == find_split_variable(4, nodes_df, info_df, {})[0][0]
+        assert 'X_INTRODUCED_5_' == find_split_variable(23031, nodes_df, info_df, {})[0][0]
+
 if __name__ == '__main__':
     unittest.main()
 
