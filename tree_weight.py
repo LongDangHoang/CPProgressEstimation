@@ -9,7 +9,7 @@ import scipy.sparse as sparse
 # import logging
 
 from multiprocessing import Pool, Array
-from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, EPSILON
+from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, is_unequal_split, EPSILON
 from pathlib import Path
 from os import cpu_count
 
@@ -19,7 +19,7 @@ from typing import List
 #### WEIGHTING SCHEMES ####
 ###########################
 
-SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme', 'true_scheme'}
+SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme', 'searchSpace_scheme', 'true_scheme'}
 PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme', 'true_scheme', 
     'zero_scheme', 'test_scheme', 'one_scheme', 'sumK_scheme'
 }
@@ -187,8 +187,22 @@ class SearchSpaceScheme():
             # use split_variable
             split_variable = cands[0]
             par_size = len(par_domain[split_variable])
-            children_size = np.array([len(child_domain[split_variable]) for child_domain in children_domain])
-            weights = children_size / par_size
+            
+            # BUG: cause issues if children size are not known correctly, i.e. golomb no-good with un-updated domain
+            # furthermore, not sure if children domain of split variable has not been affected by constraints discovered in sibling's subtree
+            # children_size = np.array([len(child_domain[split_variable]) for child_domain in children_domain])
+            # weights = children_size / par_size
+            
+            # return 1/par_size, 1 - 1/par_size for unequal split, else uniform
+            if is_unequal_split(nodes_df, kids.index):
+                # check whether first kid is = or !=
+                first_eq = kids.iloc[0,:]['Label'].find('!') == -1
+                if first_eq:
+                    weights = [1 / par_size, 1 - 1 / par_size]
+                else:
+                    weights = [1 - 1 / par_size, 1 / par_size]
+            else:
+                weights = [1 / kids.shape[0]] * kids.shape[0]
         else:
             # use uniform
             weights = [1 / kids.shape[0]] * kids.shape[0]

@@ -44,6 +44,13 @@ def make_graph_from_tree(tree: str,
         weight_col = scheme_name[0].upper() + scheme_name[1:] + 'NodeWeight'
         orig_cols = nodes_df.columns
 
+        # state_dict= {
+        #     'info_df': info_df,
+        #     'weight_colname': weight_col,
+        #     'tree': tree,
+        #     'assign_in_dfs_order': 
+        # }
+
         try:
             if (weight_col not in nodes_df.columns) or (forced_recompute is not None and scheme in forced_recompute):
                 assign_weight(nodes_df, scheme, 
@@ -76,19 +83,19 @@ def make_graph_from_tree(tree: str,
 if __name__ == '__main__':
     
     image_folder = 'graphs/'
-    tree = 'benchmark_models/mario/trees/mario_easy_3.sqlite'
-    make_graph_from_tree(
+    tree = 'benchmark_models/city-position/trees/city-4-04.sqlite'
+    (fig, ax), _, _, _  = make_graph_from_tree(
         tree, 
         schemes=[
             'uniform_scheme',
-            'domain_scheme',
+            'true_scheme',
             'searchSpace_scheme',
             'subtreeSize_scheme'
         ],
         forced_recompute=[
-            'subtreeSize_scheme',
-            'uniform_scheme',
-            'domain_scheme',
+            # 'subtreeSize_scheme',
+            # 'uniform_scheme',
+            # 'domain_scheme',
             'searchSpace_scheme'
         ],
         write_to_sqlite=True,
@@ -97,3 +104,5 @@ if __name__ == '__main__':
         use_parallel=True,
         assign_in_dfs_order=True
     )
+
+    fig.show()
