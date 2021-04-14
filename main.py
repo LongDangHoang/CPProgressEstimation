@@ -31,10 +31,12 @@ def make_graph_from_tree(tree: str,
 
     cum_sums = {}
 
+    # make dfs ordering
     if 'DFSOrdering' in nodes_df.columns:
         dfs_ordering = nodes_df[~nodes_df['Status'].isin({3})].sort_values('DFSOrdering').index.to_list()
     else:
         dfs_ordering = make_dfs_ordering(nodes_df)
+        # save dfs_ordering to dataframe
         nodes_df['DFSOrdering'] = -1
         nodes_df.loc[dfs_ordering, 'DFSOrdering'] = range(len(dfs_ordering))
         nodes_df.loc[:, 'DFSOrdering'] = nodes_df['DFSOrdering'].astype(int)
@@ -42,22 +44,22 @@ def make_graph_from_tree(tree: str,
     for scheme in schemes:
         scheme_name = scheme.split('_')[0]
         weight_col = scheme_name[0].upper() + scheme_name[1:] + 'NodeWeight'
-        orig_cols = nodes_df.columns
+        orig_cols = nodes_df.columns # keep track of original columns in case scheme fails
 
-        # state_dict= {
-        #     'info_df': info_df,
-        #     'weight_colname': weight_col,
-        #     'tree': tree,
-        #     'assign_in_dfs_order': 
-        # }
+        # dictionary to hold all parameters
+        state_dict= {
+            'nodes_df': nodes_df,
+            'info_df': info_df,
+            'weight_colname': weight_col,
+            'tree': tree,
+            'assign_in_dfs_order': assign_in_dfs_order,
+            'use_parallel': use_parallel,
+            'weight_scheme': scheme
+        }
 
         try:
             if (weight_col not in nodes_df.columns) or (forced_recompute is not None and scheme in forced_recompute):
-                assign_weight(nodes_df, scheme, 
-                    weight_colname=weight_col, info_df=info_df, 
-                    tree=tree, assign_in_dfs_order=assign_in_dfs_order,
-                    use_parallel=use_parallel
-                )
+                assign_weight(state_dict)
             cum_sums[scheme_name] = get_cum_weight(nodes_df, weight_col, dfs_ordering)
         except Exception as e:
             # we want to move on as only one scheme may fail

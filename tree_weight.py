@@ -9,7 +9,7 @@ import scipy.sparse as sparse
 # import logging
 
 from multiprocessing import Pool, Array
-from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, is_unequal_split, EPSILON
+from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, is_unequal_split, get_parent_column, EPSILON
 from pathlib import Path
 from os import cpu_count
 
@@ -24,26 +24,28 @@ PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme', 'true_
     'zero_scheme', 'test_scheme', 'one_scheme', 'sumK_scheme'
 }
 
-def make_weight_scheme(scheme_name: str, **kwargs):
+def make_weight_scheme(state_dict: dict):
+
+    scheme_name = state_dict['weight_scheme']
 
     if scheme_name.upper() == 'UNIFORM_SCHEME':
         return UniformScheme()
     elif scheme_name.upper() == 'DOMAIN_SCHEME':
-        return DomainScheme(**kwargs)
+        return DomainScheme(state_dict)
     elif scheme_name.upper() == 'SEARCHSPACE_SCHEME':
-        return SearchSpaceScheme(**kwargs)
+        return SearchSpaceScheme(state_dict)
     elif scheme_name.upper() == 'SUBTREESIZE_SCHEME':
-        return SubtreeSizeScheme(**kwargs)
+        return SubtreeSizeScheme(state_dict)
     elif scheme_name.upper() == 'TRUE_SCHEME':
-        return TrueScheme(**kwargs)
+        return TrueScheme(state_dict)
     elif scheme_name.upper() == 'ZERO_SCHEME':
         return ZeroScheme()
     elif scheme_name.upper() == 'TEST_SCHEME':
-        return TestScheme(**kwargs)
+        return TestScheme(state_dict)
     elif scheme_name.upper() == 'ONE_SCHEME':
         return OneScheme()
     elif scheme_name.upper() == 'SUMK_SCHEME':
-        return SumKScheme(**kwargs)
+        return SumKScheme(state_dict)
 
 ##################
 ## TEST SCHEMES ##
@@ -55,10 +57,9 @@ class TrueScheme():
     Value computed should match true subtree size absolutely
     """
 
-    def __init__(self, nodes_df: pd.DataFrame=None, tree: str=None, **kwargs):
+    def __init__(self, state_dict: dict):
         
-        if nodes_df is None:
-            raise ValueError('Cannot calculate true scheme without nodes_df')
+        nodes_df = state_dict['nodes_df']
 
         if 'SubtreeSize' not in nodes_df.columns:
             calculate_subtree_size(nodes_df)
@@ -94,8 +95,8 @@ class TestScheme():
     Value computed should match randomly assigned node weights
     """
 
-    def __init__(self, nodes_df: pd.DataFrame=None, **kwargs):
-
+    def __init__(self, state_dict: dict):
+        nodes_df = state_dict['nodes_df']
         if 'RandomTrueNodeWeight' not in nodes_df.columns:
             nodes_df['RandomTrueNodeWeight'] = np.random.random(len(nodes_df))
             nodes_df.loc[0, 'RandomTrueNodeWeight'] = 1
@@ -110,8 +111,13 @@ class SumKScheme():
     Sum of children is k times parent's weight, where
     k is random posi    d   tive float
     """
-    def __init__(self, k: float=None, **kwargs):
-        assert 1 >= k >= 0
+    def __init__(self, state_dict: dict):
+        if 'k' not in state_dict:
+            print('Default to k = 0.5 as k is not provided for sumKScheme')
+            k = 0.5
+        else:
+            k = state_dict['k']
+            assert 1 >= k >= 0, 'Provided K for sumKScheme must be between 0 and 1'
         self.k = k
     
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
@@ -133,15 +139,29 @@ class UniformScheme():
         assert abs(1 - sum(weights)) < EPSILON, 'Sum of weights not close to 1!'
         return weights
 
+    def get_weight_parallel(self, nodes_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Return a dataframe of three columns:
+            - NodeID
+            - ParentID
+            - Weight - weight of the node compares to its parent
+        """
+        count = nodes_df.iloc[1:, :].groupby('ParentID').count()['NKids']
+        temp = pd.DataFrame(nodes_df.iloc[1:, :].reset_index().set_index('ParentID')['NodeID'])
+        temp['Weight'] = count
+        weights = j.reset_index().set_index('NodeID')
+        weights.loc[:, 'Weight'] = 1 / weights['Weight']
+        return weights.reset_index()
+
 class DomainScheme():
 
-    def __init__(self, info_df: pd.DataFrame=None, **kwargs):
-        if info_df is None:
+    def __init__(self, state_dict: dict):
+        if info_df not in state_dict:
             raise ValueError("No information on nodes given!")
-        elif info_df.index.name != 'NodeID':
+        elif state_dict['info_df'].index.name != 'NodeID':
             raise ValueError("Info dataframe must be indexed by node id")
 
-        self.info_df = info_df
+        self.info_df = state_dict['info_df']
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """ Assign weights based on domain's sizes for a node's children, ignoring restart nodes """
@@ -154,9 +174,12 @@ class DomainScheme():
         return weights
 
 class SearchSpaceScheme():
-    def __init__(self, tree: str=None, info_df: pd.DataFrame=None, **kwargs):
+    def __init__(self, state_dict: dict):
         # init mappings
         self.mappings = {}
+        tree = state_dict['tree'] if 'tree' in state_dict else None
+        info_df = state_dict['info_df'] if 'info_df' in state_dict else None
+
         if tree:
             # if tree is provided, find mapping file
             tree_dir = Path(tree).parent 
@@ -212,9 +235,12 @@ class SearchSpaceScheme():
 
 class SubtreeSizeScheme():
 
-    def __init__(self, assign_in_dfs_order: bool=False, decay_rate: float=0.5, 
-                nodes_df: pd.DataFrame=None, tree: str=None, **kwargs):
+    def __init__(self, state_dict: dict):
         
+        # get variables from dict
+        assign_in_dfs_order = state_dict['assign_in_dfs_order']
+        nodes_df = state_dict['nodes_df'] if 'nodes_df' in state_dict else None
+
         if assign_in_dfs_order is False:
             raise ValueError('Cannot use subtree size scheme if not assigning weights in DFS ordering')
         elif nodes_df is None:
@@ -228,7 +254,7 @@ class SubtreeSizeScheme():
         self.characteristic_w = 1 # initialize the characteristic weight that describes distribution of subtree sizes
         self.previous_root = -1 # initlaize the previous root
         self.path = [] # track path to current nodeassign_in_dfs_order
-        self.decay_rate = decay_rate
+        self.decay_rate = state_dict['decay_rate'] if 'decay_rate' in state_dict else 0.7
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """
@@ -308,35 +334,35 @@ def make_weight_parallel(j: int, use_parallel: bool=False):
         parallel_matrix['data'][child_id] = weights[i]
         parallel_matrix['row'][child_id] = j
         
-def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str, 
-        weight_colname: str='NodeWeight',
-        assign_in_dfs_order: bool=True,
-        use_parallel: bool=False,
-        **kwargs) -> None:
+def assign_weight(state_dict: dict) -> None:
     """
     Assigns weight = 1 to root and propogates that weight down using a weighting scheme.
     Nodes which are backjumped over and pruned are ignored.
     
     Parameter:
-        - nodes_df: dataframe of nodes, indexed by nodes_id
-        - weight_scheme: name of function defined in WeightScheme class
-        - kwargs: keyword arguments required for the weight scheme
+        - state_dict: dictionary of parameters
     """
     
-    ws = make_weight_scheme(weight_scheme, assign_in_dfs_order=assign_in_dfs_order, nodes_df=nodes_df, **kwargs)
+    # extract and initialize variables using state_dict
+    weight_colname = state_dict['weight_colname']
+    nodes_df = state_dict['nodes_df']
+    ws = make_weight_scheme(state_dict)
+
+    # init 0 column
     nodes_df[weight_colname] = 0
     invalid_status = [3] # pruned nodes that are jumped over without being considered
     valid_df = pd.DataFrame.copy(nodes_df[~nodes_df['Status'].isin(invalid_status)])
     valid_df.loc[0, weight_colname] = 1 # root node has weight 1
 
-    if assign_in_dfs_order:
-        assert 'DFSOrdering' in valid_df.columns
+    # init travel index
+    if state_dict['assign_in_dfs_order']:
+        assert 'DFSOrdering' in valid_df.columns, 'Cannot assign in DFS order without known dfs ordering in dataframe'
         index_lst = valid_df[valid_df['NKids'] > 0].sort_values('DFSOrdering').index
     else:
         index_lst = valid_df[valid_df['NKids'] > 0].index
     
-    # propogate weights down
-    if weight_scheme not in PARALLEL_SAFE or not use_parallel:
+    # main weight_propogation 
+    if state_dict['weight_scheme'] not in PARALLEL_SAFE or not state_dict['use_parallel']:
         for j in index_lst:
             par_weight = valid_df.loc[j, weight_colname]
             children = valid_df[valid_df['ParentID'].isin([j])]
@@ -349,7 +375,7 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
             assert len(weights) == children.shape[0]
 
             valid_df.loc[children.index, weight_colname] = par_weight * np.array(weights) 
-            if weight_scheme in SUM_TO_1: # schemes requiring sum to 1
+            if state_dict['weight_scheme'] in SUM_TO_1: # schemes requiring sum to 1
                 assert abs(valid_df.loc[valid_df['ParentID'] == j, weight_colname].sum() - par_weight) < EPSILON
     
     else:
@@ -364,17 +390,23 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         wa_state['valid_df'] = valid_df
         wa_state['ws'] = ws
         wa_state['weight_colname'] = weight_colname
-        wa_state['weight_scheme'] = weight_scheme
+        wa_state['weight_scheme'] = state_dict['weight_scheme']
 
-        try:
-            pool = Pool(processes=cpu_count())
-            pool.map(make_weight_parallel, index_lst)
-        finally:
-            pool.close()
-
-        # rows are parent, columns are node ids, data is weight of child for parent
-        weights = sparse.csr_matrix((parallel_matrix['data'], (parallel_matrix['row'], range(nodes_df.shape[0]))), 
+        if state_dict['weight_scheme'] != 'uniform_scheme':
+            try:
+                pool = Pool(processes=cpu_count())
+                pool.map(make_weight_parallel, index_lst)
+            finally:
+                pool.close()
+        
+            # rows are parent, columns are node ids, data is weight of child for parent
+            weights = sparse.csr_matrix((parallel_matrix['data'], (parallel_matrix['row'], range(nodes_df.shape[0]))), 
                     shape=(nodes_df.shape[0], nodes_df.shape[0]))
+        else:
+            weights = ws.get_weight_parallel(nodes_df)
+            weights = sparse.csr_matrix((k['Weight'].to_numpy(), (k['ParentID'].to_numpy(), k['NodeID'].to_numpy())),
+                    shape=(nodes_df.shape[0], nodes_df.shape[0]))
+            
         running = weights
 
         # > 0 works for normal weight, but test weighting schemes include negative weights
@@ -389,7 +421,7 @@ def assign_weight(nodes_df: pd.DataFrame, weight_scheme: str,
         del parallel_matrix
         del wa_state # free up memory
         
-    if weight_scheme in SUM_TO_1: # schemes requiring sum to 1
+    if state_dict['weight_scheme'] in SUM_TO_1: # schemes requiring sum to 1
         assert abs(valid_df.loc[valid_df['Status'].isin({0, 1, 3}), weight_colname].sum() - 1) < EPSILON
 
     # assign valid back to nodes, default invalid status nodes' weights to 0

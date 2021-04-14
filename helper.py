@@ -345,6 +345,15 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
     
     return cands, mappings, par_domain, children_domain
 
+def get_parent_column(column: str, df: pd.DataFrame) -> pd.Series:
+    """
+    Return the column value associated with the parent of each node
+    """
+    has_root = 1 if 0 == df.index[0] else 0
+    j = df.iloc[has_root:, :].reset_index().set_index('ParentID')[['NodeID', column]]
+    j.loc[:, column] = df.loc[df.iloc[has_root:, :]['ParentID'], column]    
+    return j.reset_index().set_index('NodeID')[column]
+
 ###################
 #### UNIT TEST ####
 ###################

@@ -13,7 +13,7 @@ from collections import deque
 from helper import calculate_subtree_size, get_cum_weight, make_dfs_ordering
 from tree_weight import assign_weight
 
-##########################nodes_df.shape[0]
+##########################
 # Test utility functions #
 ##########################
 
@@ -133,41 +133,50 @@ class StressTest(unittest.TestCase):
         nodes_df = pd.DataFrame.copy(StressTest.rand_bin_tree)
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='true_scheme',
-            assign_in_dfs_order=False,
-            use_parallel=StressTest.use_parallel
-        )
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'true_scheme',
+			'weight_colname': 'NodeWeight',
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
+
+        assign_weight(state_dict)
 
         # calculate math true weight as 2**(1-depth)
-        nodes_df['TrueMathWeight'] = np.power(2, -np.floor(np.log2(nodes_df.index.to_numpy() + 1)))
+        nodes_df['TrueMathWeight'] = np.power(2, -np.floor(np.log2(nodes_df.index.to_numpy() + 1))) 
         self.assertTrue(np.all(nodes_df['TrueMathWeight'] == nodes_df['NodeWeight']))
 
     def test_assignweight_zero(self):
 
         nodes_df = pd.DataFrame.copy(StressTest.rand_tree)
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
+            
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'zero_scheme',
+			'weight_colname': 'NodeWeight',
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='zero_scheme',
-            assign_in_dfs_order=False,
-            use_parallel=StressTest.use_parallel
-        )
+        assign_weight(state_dict)
         self.assertTrue(np.all(nodes_df.iloc[1:, :]['NodeWeight'] == 0))
     
     def test_assignweight_one(self):
 
         nodes_df = pd.DataFrame.copy(StressTest.rand_tree)
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
+        
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'one_scheme',
+			'weight_colname': 'NodeWeight',
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='one_scheme',
-            assign_in_dfs_order=False,
-            use_parallel=StressTest.use_parallel
-        )
+        assign_weight(state_dict)
 
         self.assertTrue(np.all(nodes_df['NodeWeight'] == 1))
     
@@ -176,13 +185,16 @@ class StressTest(unittest.TestCase):
         nodes_df = pd.DataFrame.copy(StressTest.rand_tree)
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='sumK_scheme',
-            assign_in_dfs_order=False,
-            k=0,
-            use_parallel=StressTest.use_parallel
-        )
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'sumK_scheme',
+			'weight_colname': 'NodeWeight',
+            'k': 0,
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
+
+        assign_weight(state_dict)
 
         # check sum of all leaves = 0
         # this assumption is false when tree is not perfect
@@ -197,14 +209,16 @@ class StressTest(unittest.TestCase):
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
 
         k = 1 / random.randint(1, 100)
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'sumK_scheme',
+			'weight_colname': 'NodeWeight',
+            'k': k,
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='sumK_scheme',
-            assign_in_dfs_order=False,
-            k=k,
-            use_parallel=StressTest.use_parallel
-        )
+        assign_weight(state_dict)
 
         # check sum of all siblings = k * parent 
         sum_sibs = nodes_df.iloc[1:,:].groupby(['ParentID']).sum()['NodeWeight']
@@ -212,18 +226,21 @@ class StressTest(unittest.TestCase):
 
     def test_assignweight_randomtree(self):
         """
-        For a random tree, cumulative true scheme should always return the straightline through the origin
+        For a random tree, test_scheme should always match true weight exactly
         """
 
         nodes_df = pd.DataFrame.copy(StressTest.rand_bin_tree)
         nodes_df = nodes_df.rename(columns={'MathSubtreeSize': 'SubtreeSize'})
 
-        assign_weight(
-            nodes_df=nodes_df,
-            weight_scheme='test_scheme',
-            assign_in_dfs_order=False,
-            use_parallel=StressTest.use_parallel
-        )
+        state_dict = {
+            'nodes_df': nodes_df,
+            'weight_scheme': 'test_scheme',
+			'weight_colname': 'NodeWeight',
+            'assign_in_dfs_order': False,
+            'use_parallel': StressTest.use_parallel
+        }
+
+        assign_weight(state_dict)
 
         self.assertTrue(np.all(np.abs(nodes_df['NodeWeight'] - nodes_df['RandomTrueNodeWeight']) < 1e-8))
 
