@@ -58,11 +58,14 @@ def get_all_trees(benchmark_folder: str) -> list:
         trees.extend([os.path.join(root, name) for name in files if '.sqlite' in names])
     return trees
 
-def parse_info_string(node_info: str) -> dict:
+def parse_info_string(node_info: str, early_stop: str=None) -> dict:
     """
     Parse node info string to dict of variables and their domains.
     Domains can be ranges, or other collectors that support a function len() for caculating their size.
     Domains must not be empty (otherwise the node will have been pruned)
+
+    Args:
+        - early_stop: return the early stop variable's domain right away
 
     Returns:
         - {variable {str}: domain{range} }
@@ -102,6 +105,9 @@ def parse_info_string(node_info: str) -> dict:
             raise e
         except ValueError:
             raise ValueError("Cannot get size of domain of a variable with len!")
+        
+        if early_stop:
+            return info_dict[varname]
 
     return info_dict
 
@@ -268,7 +274,7 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
     """
     Given a node, find the split variable among the domains (if possible) that leads to its children
     """
-    
+    # here, label_var is var name in nodes_df, and cand is var name in info_df 
     children_idx = nodes_df[nodes_df['ParentID'] == par_idx].index
     if len(children_idx) <= 1: # can't find split_variable in this case, and does not need to
         return [], mappings, None, None
@@ -341,7 +347,6 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
                     
     if len(cands) == 1:
         mappings[label_var] = cands[0]
-        mappings[cands[0]] = label_var
     
     return cands, mappings, par_domain, children_domain
 
