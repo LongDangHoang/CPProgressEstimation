@@ -236,25 +236,24 @@ class SearchSpaceScheme(SumToOneScheme, ParallelizableScheme):
         # init mappings
         self.mapdict = {}
         self.mappings = pd.DataFrame({'InfoDFName': {}, 'NodesDFName': {}})
-        tree = state_dict['tree'] if 'tree' in state_dict else None
-        info_df = state_dict['info_df'] if 'info_df' in state_dict else None
+        self.tree = state_dict['tree'] if 'tree' in state_dict else None
+        self.info_df = state_dict['info_df'] if 'info_df' in state_dict else None
 
-        if tree:
+        if self.tree:
             # if tree is provided, find mapping file
-            mapping_file = tree.replace('.sqlite', '.paths')
+            mapping_file = self.tree.replace('.sqlite', '.paths')
             # if mapping file is found, use it
             if Path(mapping_file).exists():
-                mappings = pd.read_csv(mapping_file, sep='\t', header=None, quotechar="'")
+                mappings = pd.read_csv(mapping_file, sep='\t', header=None, quotechar="'")[[0, 1]]
                 self.mapdict = mappings.set_index(0).to_dict()[1]
                 self.mapdict.update(mappings.set_index(1).to_dict()[0])
                 self.mappings = mappings.rename(columns={0: 'InfoDFName', 1: 'NodesDFName'})
 
         # init info_df
-        if info_df is None:
+        if self.info_df is None:
             raise ValueError("No information on nodes given!")
-        elif info_df.index.name != 'NodeID':
+        elif self.info_df.index.name != 'NodeID':
             raise ValueError("Info dataframe must be indexed by node id")
-        self.info_df = info_df
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """
@@ -296,23 +295,26 @@ class SearchSpaceScheme(SumToOneScheme, ParallelizableScheme):
             raise ValueError("Cannot run search space scheme in parallel without known mappings beforehand")
 
         # use vectorized string to get names of labels
-        node_label = nodes_df['Label'].str.split('=', expand=True)[0].str.strip('! ').rename('LabelVarname')
+        node_label = nodes_df['Label'].str.split('=', expand=True)[0].str.strip('! ').rename('NodesDFName')
         node_label = node_label[node_label != '']
         # use indexing to map nodes' labels names to info's domain names
-        info_label = node_label.reset_index().set_index('LabelVarname')
-        try:
-            info_label['LabelName'] = self.mappings.set_index('NodesDFName')['InfoDFName']
-        except:
-            breakpoint()
+        info_label = node_label.reset_index().set_index('NodesDFName')
+        info_label['InfoDFName'] = self.mappings.set_index('NodesDFName')['InfoDFName']
         info_label = info_label.set_index('NodeID')
         # assign parent id to extract parent's domain for split variable
         info_label['ParentID'] = nodes_df['ParentID']
         info_label = info_label.drop_duplicates('ParentID')
         info_label = info_label.set_index('ParentID').reset_index().rename(columns={'ParentID': 'NodeID'}).set_index('NodeID')
 
-        info_df['Label'] = info_label['LabelName']
-        parent_domain_size = info_df[info_df['Label'].notna()].parallel_apply(lambda row: len(parse_info_string(row['Info'], early_stop=row['Label'])), axis=1) 
-        del info_df['Label']
+        assert 0 in nodes_df.index
+        # init parent domain size to number of children. Even if there is no matched split variable, the numbers will work out to uniform scheme
+        parent_domain_size = nodes_df.iloc[1:,:].reset_index().groupby(['ParentID']).count()['NodeID']
+        self.info_df['Label'] = info_label['InfoDFName']
+        if sum(self.info_df['Label'].notna()) > 1:
+            get_label_domain_size = lambda row: len(parse_info_string(row['Info'], early_stop=row['Label']))
+            split_parent_domain_size = self.info_df[self.info_df['Label'].notna()].parallel_apply(get_label_domain_size, axis=1) 
+            parent_domain_size.loc[split_parent_domain_size.index] = split_parent_domain_size
+        self.info_df = self.info_df.drop(columns=['Label'])
 
         nodes_df['HasUnequalSplit'] = nodes_df['Label'].str.find('!') > 0 # will label null domains as equal split, which works for us
         # transform index from nodeid to parentid to perform computation with 
@@ -321,8 +323,14 @@ class SearchSpaceScheme(SumToOneScheme, ParallelizableScheme):
         weights.loc[:, 'ParentDomainSize'] = parent_domain_size
         weights = weights.reset_index().set_index('NodeID')
         # if is unequal split, automatically receiver the heavier share, while if equal split, receive equal share
+        # assuming that if an unequal split exists, there cannot be more than 2 children
         weights['Weight'] = 1 / weights['ParentDomainSize'] + weights['HasUnequalSplit'] * (1 - 2 / weights['ParentDomainSize'])
         weights = weights.drop(columns=['HasUnequalSplit', 'ParentDomainSize']).reset_index()
+        # assign weight 1 to nodes whose siblings are skipped. This is unlikely but we are better safe than sorry
+        temp = weights.groupby(['ParentID']).sum()['Weight']
+        parent_with_skipped_children = temp[temp != 1].index
+        assert np.all(parent_domain_size.loc[parent_with_skipped_children] == 1)
+        weights.loc[weights['ParentID'].isin(parent_with_skipped_children), 'Weight'] = 1
         return weights
 
     def tear_down(self):
