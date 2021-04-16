@@ -231,7 +231,7 @@ class UniformScheme(SumToOneScheme, ParallelizableScheme):
         weights.loc[:, 'Weight'] = 1 / weights['Weight']
         return weights.reset_index()
 
-class SearchSpaceScheme(GenericWeightScheme, ParallelizableScheme):
+class SearchSpaceScheme(SumToOneScheme, ParallelizableScheme):
     def __init__(self, state_dict: dict):
         # init mappings
         self.mapdict = {}
@@ -241,10 +241,10 @@ class SearchSpaceScheme(GenericWeightScheme, ParallelizableScheme):
 
         if tree:
             # if tree is provided, find mapping file
-            mapping_file = tree.replace('.sqlite', '.csv')
+            mapping_file = tree.replace('.sqlite', '.paths')
             # if mapping file is found, use it
             if Path(mapping_file).exists():
-                mappings = pd.read_csv(mapping_file, header=None, quotechar="'")
+                mappings = pd.read_csv(mapping_file, sep='\t', header=None, quotechar="'")
                 self.mapdict = mappings.set_index(0).to_dict()[1]
                 self.mapdict.update(mappings.set_index(1).to_dict()[0])
                 self.mappings = mappings.rename(columns={0: 'InfoDFName', 1: 'NodesDFName'})
@@ -293,7 +293,6 @@ class SearchSpaceScheme(GenericWeightScheme, ParallelizableScheme):
             - Weight - weight of the node compares to its parent
         """
         if len(self.mappings) == 0:
-            # make mappings in parallel first
             raise ValueError("Cannot run search space scheme in parallel without known mappings beforehand")
 
         # use vectorized string to get names of labels
@@ -301,7 +300,10 @@ class SearchSpaceScheme(GenericWeightScheme, ParallelizableScheme):
         node_label = node_label[node_label != '']
         # use indexing to map nodes' labels names to info's domain names
         info_label = node_label.reset_index().set_index('LabelVarname')
-        info_label['LabelName'] = mappings.set_index(1)[0]
+        try:
+            info_label['LabelName'] = self.mappings.set_index('NodesDFName')['InfoDFName']
+        except:
+            breakpoint()
         info_label = info_label.set_index('NodeID')
         # assign parent id to extract parent's domain for split variable
         info_label['ParentID'] = nodes_df['ParentID']
@@ -312,13 +314,14 @@ class SearchSpaceScheme(GenericWeightScheme, ParallelizableScheme):
         parent_domain_size = info_df[info_df['Label'].notna()].parallel_apply(lambda row: len(parse_info_string(row['Info'], early_stop=row['Label'])), axis=1) 
         del info_df['Label']
 
-        nodes_df['HasUnequalSplit'] = nodes_df['Label'].str.find('!') > 0
+        nodes_df['HasUnequalSplit'] = nodes_df['Label'].str.find('!') > 0 # will label null domains as equal split, which works for us
         # transform index from nodeid to parentid to perform computation with 
         assert 0 in nodes_df.index
         weights = nodes_df[['ParentID', 'HasUnequalSplit']].reset_index().set_index('ParentID').iloc[1:,:]
         weights.loc[:, 'ParentDomainSize'] = parent_domain_size
         weights = weights.reset_index().set_index('NodeID')
-        weights['Weight'] = 1 / weights['ParentDomainSize'] + weights['HasUnequalSplit'] * (1 - 2 / weights['ParentDomainSize'])# weights = weights.reset_index().drop(columns=['HasUnequalSplit'])
+        # if is unequal split, automatically receiver the heavier share, while if equal split, receive equal share
+        weights['Weight'] = 1 / weights['ParentDomainSize'] + weights['HasUnequalSplit'] * (1 - 2 / weights['ParentDomainSize'])
         weights = weights.drop(columns=['HasUnequalSplit', 'ParentDomainSize']).reset_index()
         return weights
 
@@ -436,7 +439,7 @@ def assign_weight(state_dict: dict) -> None:
             ws.test_weight(weights)
             valid_df.loc[children.index, weight_colname] = par_weight * np.array(weights) 
     else:
-        pandarallel.initialize()
+        pandarallel.initialize(verbose=False)
         weights = ws.get_weight_parallel(valid_df)
         weights = sparse.csr_matrix((weights['Weight'].to_numpy(), (weights['ParentID'].to_numpy(), weights['NodeID'].to_numpy())),
                 shape=(nodes_df.shape[0], nodes_df.shape[0]))

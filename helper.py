@@ -259,6 +259,7 @@ def is_unequal_split(nodes_df: int, children_idx: list) -> bool:
                    .unique())\
         == set(['=', '!='])
 
+### DEPECRATED DUE TO LOW RELIABLITY ###
 def find_split_variable(par_idx: int, nodes_df: pd.DataFrame, 
             info_df: pd.DataFrame, mappings: dict={}) -> list:
     # 1. no goods domains are unreliable (one or more variable should have a null domain)
