@@ -10,7 +10,7 @@ import scipy.sparse as sparse
 from abc import ABC, abstractmethod 
 from multiprocessing import Pool, Array
 from pandarallel import pandarallel
-from helper import get_domain_size, find_split_variable, calculate_subtree_size, to_sqlite, is_unequal_split, get_parent_column, parse_info_string, EPSILON
+from helper import find_split_variable, calculate_subtree_size, to_sqlite, is_unequal_split, get_parent_column, parse_info_string, EPSILON
 from pathlib import Path
 from os import cpu_count
 
@@ -21,7 +21,7 @@ from typing import List
 ###########################
 
 SUM_TO_1 = {'uniform_scheme', 'domain_scheme', 'subtreeSize_scheme', 'searchSpace_scheme', 'true_scheme'}
-PARALLEL_SAFE = {'uniform_scheme', 'domain_scheme', 'searchSpace_scheme', 'true_scheme', 
+PARALLEL_SAFE = {'uniform_scheme', 'searchSpace_scheme', 'true_scheme', 
     'zero_scheme', 'test_scheme', 'one_scheme', 'sumK_scheme'
 }
 
@@ -48,9 +48,9 @@ def make_weight_scheme(state_dict: dict):
     elif scheme_name.upper() == 'SUMK_SCHEME':
         return SumKScheme(state_dict)
 
-################
-## INTERFACES ##
-################
+###############
+## CONTRACTS ##
+###############
 
 class GenericWeightScheme(ABC):
 
@@ -71,6 +71,12 @@ class ParallelizableScheme(ABC):
     
     @abstractmethod
     def get_weight_parallel(self, nodes_df: pd.DataFrame):
+        """
+        Return a dataframe of three columns:
+            - NodeID
+            - ParentID
+            - Weight - weight of the node compares to its parent
+        """
         pass
 
 class SumToOneScheme(GenericWeightScheme):
@@ -163,8 +169,6 @@ class TestScheme(GenericWeightScheme, ParallelizableScheme):
         res_df = pd.DataFrame.copy(nodes_df).iloc[1:, :].loc[:, ['ParentID', 'RandomTrueNodeWeight']]
         res_df.loc[:, 'Weight'] = res_df['RandomTrueNodeWeight'] / parent_trueweight
         return res_df.reset_index().drop(columns=['RandomTrueNodeWeight'])
-
-
 
 class SumKScheme(GenericWeightScheme, ParallelizableScheme):
     """
@@ -446,7 +450,7 @@ def assign_weight(state_dict: dict) -> None:
             assert len(weights) == children.shape[0]
             ws.test_weight(weights)
             valid_df.loc[children.index, weight_colname] = par_weight * np.array(weights) 
-    else:
+    else: # use parallelization
         pandarallel.initialize(verbose=False)
         weights = ws.get_weight_parallel(valid_df)
         weights = sparse.csr_matrix((weights['Weight'].to_numpy(), (weights['ParentID'].to_numpy(), weights['NodeID'].to_numpy())),

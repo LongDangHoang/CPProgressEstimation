@@ -39,7 +39,7 @@ def to_df(file: str, table: str) -> pd.DataFrame:
 def to_sqlite(nodes_df: pd.DataFrame, tree: str) -> None:
     """
     Write dataframe to sqlite and ensure readability by
-    MiniZinc
+    MiniZincIDE
     """
     engine = create_engine('sqlite:///' + tree)
     strict_order = ['NodeID', 'ParentID', 'Alternative', 'NKids', 'Status', 'Label']
@@ -111,33 +111,22 @@ def parse_info_string(node_info: str, early_stop: str=None) -> dict:
 
     return info_dict
 
-def get_domain_size(node_info: str) -> int:
-    """
-    Get the size of all possible configurations possible for a node
-    """
-    
-    info_dict = parse_info_string(node_info)
-    size = 1
-    for domain in info_dict.values():
-        size *= len(domain)
-
-    return size
-
 def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     """
-    Return list of nodeids in the order they were completely solved by
+    Return list of nodeids in the order they were entered by
     the depth-first search algorithm.
-    We ignored restart nodes.
+
     """
+    valid_df = nodes_df[nodes_df['Status'] != 3]
     dfs_ordering = [0]
-    boundary = nodes_df[(nodes_df['ParentID'] == 0) & (nodes_df['Status'] != 3)]\
+    boundary = valid_df[(valid_df['ParentID'] == 0) & (valid_df['Status'] != 3)]\
                 .sort_values('Alternative', ascending=False).index.to_list()
 
     # run simulated dfs on tree
     while len(boundary) > 0:
         nxt = boundary.pop()
         dfs_ordering.append(nxt)
-        boundary.extend(nodes_df[(nodes_df['ParentID'] == nxt) & (nodes_df['Status'] != 3)]\
+        boundary.extend(valid_df[(valid_df['ParentID'] == nxt) & (valid_df['Status'] != 3)]\
                              .sort_values('Alternative', ascending=False).index.to_list())
 
     assert set(dfs_ordering) == (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index))
@@ -203,7 +192,6 @@ def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Per
         raise ValueError('Nothing to graph!')
     for name, cum_sum in cum_sums.items():
         if cum_sum.max() - 1 > EPSILON or abs(cum_sum.min()) > EPSILON: # use EPSILON cause precision
-            import pdb; pdb.set_trace()
             raise ValueError(f'Invalid range for cumulative measure: {name}_scheme')
         elif prev_length and len(cum_sum) != prev_length:
             raise ValueError('Cumulative measures\' lengths do not match!')
@@ -228,24 +216,30 @@ def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
     Get size of subtree rooted at each node in the tree. 
     Leaf node has a subtree size
     Pruned nodes are ignored (considered non-existent)
-
-    :complexity: O(nodes_df.shape[0])
     """
 
-    def get_subtree_size(node_id: int) -> int:
-        # recursive function that returns node_id's subtree size
+    valid_df = pd.DataFrame.copy(nodes_df[nodes_df['Status'] != 3])
+    valid_df['SubtreeSize'] = np.nan
+    valid_df['HasNotSubtreeSize'] = True
 
-        # base case
-        if nodes_df.loc[node_id, 'Status'] in {0, 1, 3}:
-            return 1 if nodes_df.loc[node_id, 'Status'] in {0, 1} else 0
+    start = valid_df[valid_df['Status'].isin({0, 1})] # start with leaves
+    valid_df.loc[start.index, 'SubtreeSize'] = 1
+    valid_df.loc[start.index, 'HasNotSubtreeSize'] = False
 
-        count = sum([get_subtree_size(child_id) for child_id in nodes_df[nodes_df['ParentID'].isin({node_id})].index])
-        count += 1
-        nodes_df.loc[node_id, 'SubtreeSize'] = count
-        return count
-
-    nodes_df['SubtreeSize'] = (nodes_df['Status'] <= 1).astype(int)
-    get_subtree_size(0)
+    while valid_df['HasNotSubtreeSize'].sum() > 0:
+        parent_idx = np.unique(valid_df.loc[start.index, 'ParentID'].values)
+        # filter out parent with unexplored children
+        parent_idx = valid_df.loc[valid_df['ParentID'].isin(parent_idx)]\
+                        .groupby(['ParentID'])\
+                        .sum()['HasNotSubtreeSize'] # parent_index along with count of nodes without subtreesize
+        parent_idx = parent_idx[parent_idx == 0].index
+        valid_df.loc[parent_idx, 'SubtreeSize'] = 1 + valid_df[valid_df['ParentID'].isin(parent_idx)].groupby(['ParentID']).sum()['SubtreeSize']
+        valid_df.loc[parent_idx, 'HasNotSubtreeSize'] = False
+        start = valid_df.loc[parent_idx, :]
+        
+    nodes_df.loc[:, 'SubtreeSize'] = valid_df['SubtreeSize']
+    nodes_df.loc[nodes_df['SubtreeSize'].isna(), 'SubtreeSize'] = 0
+    nodes_df.loc[:, 'SubtreeSize'] = nodes_df['SubtreeSize'].astype(int)
 
 def pairwise_diff(lst: list) -> bool:
     # helper for find_split_variable
@@ -460,7 +454,7 @@ class TestHelperMethods(unittest.TestCase):
     #     ordering = make_post_ordering(self.test_df)
     #     self.assertEqual(ordering, [4, 5, 6, 1, 7, 2, 9, 11, 10, 3, 0])
         
-    def find_split_variable(self):
+    def test_find_split_variable(self):
         # use the test tree: mario_easy_3
 
         tree = 'benchmark_models/mario/trees/mario_easy_3.sqlite'

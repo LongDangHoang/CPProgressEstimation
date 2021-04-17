@@ -17,7 +17,7 @@ def make_graph_from_tree(tree: str,
         forced_recompute: list=None,
         assign_in_dfs_order: bool=False,
         use_parallel: bool=False
-    ) -> '(fig, ax), pd.DataFrame, pd.DataFrame dict[str, pd.Series]':
+    ) -> '(fig, ax), pd.DataFrame, pd.DataFrame, dict[str, pd.Series]':
     """
     Make a graph comparing all weighting schemes for a given tree
 
