@@ -2,15 +2,17 @@ import pandas as pd
 import traceback
 import os
 
-from helper import to_df, make_dfs_ordering, plot_goodness, get_cum_weight, to_sqlite
+from helper import to_df, get_existing_dfs_ordering, get_exp_smoothed_cum_weight, plot_goodness, get_cum_weight, to_sqlite
 from tree_weight import assign_weight, make_weight_scheme
 from pathlib import Path
+from argparse import ArgumentParser
 
 from typing import List
 
 
 def make_graph_from_tree(tree: str,
-        schemes: List[str], 
+        schemes: List[str],
+        exponential_smoothing: dict={},
         write_to_sqlite: bool=True, 
         save_image: bool=True,
         image_folder: str='graphs/',
@@ -33,7 +35,7 @@ def make_graph_from_tree(tree: str,
 
     # make dfs ordering
     if 'DFSOrdering' in nodes_df.columns:
-        dfs_ordering = nodes_df[~nodes_df['Status'].isin({3})].sort_values('DFSOrdering').index.to_list()
+        dfs_ordering = get_existing_dfs_ordering(nodes_df)
     else:
         dfs_ordering = make_dfs_ordering(nodes_df)
         # save dfs_ordering to dataframe
@@ -61,6 +63,9 @@ def make_graph_from_tree(tree: str,
             if (weight_col not in nodes_df.columns) or (forced_recompute is not None and scheme in forced_recompute):
                 assign_weight(state_dict)
             cum_sums[scheme_name] = get_cum_weight(nodes_df, weight_col, dfs_ordering)
+            if scheme in exponential_smoothing: # FIXME: scheme and scheme name are different and hella confusing
+                if exponential_smoothing[scheme_name] is not None:
+                    cum_sums[scheme_name + '_exponential_smoothed'] = get_exp_smoothed_cum_weight(nodes_df, cum_sums[scheme_name])
         except Exception as e:
             # we want to move on as only one scheme may fail
             print(f"{scheme} computation fails! Moving on to next scheme...")
@@ -68,7 +73,7 @@ def make_graph_from_tree(tree: str,
             # reset all variables related to that schemenodes_df
             nodes_df = nodes_df[orig_cols]
             if scheme_name in cum_sums:
-                del cum_sums['scheme_name']
+                del cum_sums[scheme_name]
   
     ax_title = tree.split('/')[1] + '_' + tree.split('/')[-1].strip('.sqlite')
     fig, ax = plot_goodness(cum_sums, ax_title=ax_title)
@@ -83,29 +88,16 @@ def make_graph_from_tree(tree: str,
     return (fig, ax), nodes_df, info_df, cum_sums
 
 if __name__ == '__main__':
-    
-    image_folder = 'graphs/'
-    tree = 'benchmark_models/nonogram/trees/dom_06.sqlite'
-    (fig, ax), _, _, _  = make_graph_from_tree(
-        tree, 
-        schemes=[
-            'uniform_scheme',
-            'true_scheme',
-            'searchSpace_scheme',
-            'subtreeSize_scheme'
-        ],
-        forced_recompute=[
-            # 'subtreeSize_scheme',
-            # 'uniform_scheme',
-            # 'domain_scheme',
-            'searchSpace_scheme'
 
-        ],
-        write_to_sqlite=False,
-        image_folder=image_folder,
-        save_image=True,
-        use_parallel=True,
-        assign_in_dfs_order=True
+    parser = ArgumentParser(description="Configure weight estimation")
+    paser.add_argument('-c', '--config', type=Path, default='./settings.yaml', nargs='?')
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+ 
+    (fig, ax), _, _, _  = make_graph_from_tree(
+        **config
     )
 
     fig.show()

@@ -1,0 +1,28 @@
+image_folder: 'graphs/'
+tree: 'benchmark_models/nonogram/trees/dom_06.sqlite'
+schemes: [
+    'uniform_scheme',
+    'true_scheme',
+    'searchSpace_scheme',
+    'subtreeSize_scheme'
+]
+forced_recompute: [
+    # 'subtreeSize_scheme',
+    # 'uniform_scheme',
+    # 'domain_scheme',
+    # 'searchSpace_scheme'
+]
+exponential_smoothing: # name must match scheme name
+    uniform_scheme:
+      a: 0.001
+      b: 0.001
+    searchSpace_scheme:
+      a: 0.001
+      b: 0.001
+    subtreesize_scheme:
+      a: 0.001
+      b: 0.001
+write_to_sqlite: False
+save_image: True
+use_parallel: True
+assign_in_dfs_order: True

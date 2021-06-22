@@ -1,0 +1,2 @@
+1. Parallelize the task of in-order labeling
+2. Parallelize each scheme, i.e. computing all schemes at the same time

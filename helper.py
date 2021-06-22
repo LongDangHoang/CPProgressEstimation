@@ -55,7 +55,7 @@ def get_all_trees(benchmark_folder: str) -> list:
     """
     trees = []
     for root, dirs, files in os.walk(benchmark_folder):
-        trees.extend([os.path.join(root, name) for name in files if '.sqlite' in names])
+        trees.extend([os.path.join(root, name) for name in files if '.sqlite' in name])
     return trees
 
 def parse_info_string(node_info: str, early_stop: str=None) -> dict:
@@ -111,12 +111,24 @@ def parse_info_string(node_info: str, early_stop: str=None) -> dict:
 
     return info_dict
 
+def get_existing_dfs_ordering(nodes_df: pd.DataFrame) -> list:
+    """
+    Retrieve a list of node ids in the order they were visited depth-first searched.
+    Raise error if dfs ordering not computed before hand
+    """
+    if 'DFSOrdering' in nodes_df.columns:
+        return nodes_df[nodes_df['Status'] != 3].sort_values('DFSOrdering').reset_index()['NodeID'].to_numpy()
+    else:
+        raise ValueError("DFS Order not precomputed!")
+
 def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     """
     Return list of nodeids in the order they were entered by
     the depth-first search algorithm.
 
+    If inputted tree already has recorded ordering, use it instead.
     """
+
     valid_df = nodes_df[nodes_df['Status'] != 3]
     dfs_ordering = [0]
     boundary = valid_df[(valid_df['ParentID'] == 0) & (valid_df['Status'] != 3)]\
@@ -177,6 +189,73 @@ def get_cum_weight(nodes_df: pd.DataFrame, weight_column: str, ordering: list) -
                          .fillna(method='ffill').fillna(0)  
 
     return cumsum
+
+def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: float=0.001, b: float=0.001) -> pd.DataFrame:
+    """
+    Given cumulative sums for all nodes, returns the exponentially smoothed cummulative weight
+
+    Args:
+        nodes_df: dataframe of the tree
+        cum_sum: the pandas series corresponding to a specific type of cumulative weighting
+        a: decay factor for weight value
+        b: decay factor for slope value
+
+    Return:
+        a pandas series indexed by dfs ordering containting exponentially smoothed weight
+    """
+    cum_sums_leaves = cum_sum.loc[
+                        nodes_df[nodes_df['Status'].isin({0, 1})]['DFSOrdering'] # cum sum is indexed by dfs ordering
+                    ].sort_values() # filtered out non-leaves
+
+    init_q = cum_sums_leaves.iloc[0] # such that the first iteration brings q and s into here
+    init_s = 0
+    q_list = []
+    s_list = []
+    completion = pd.DataFrame({'dfs_order': [], 'completion': []})
+
+    every = 1 # resolution
+    step = 0
+    i = 0
+    while i < len(cum_sums_leaves.index):
+        
+        if len(q_list) == 1024:
+            # trigger squeeze and recomputation
+            every *= 2 # double the resolution
+            # reset seen q and s values
+            q_list = []
+            s_list = []
+            # recompute with the new resolution , 0, every, 2*every, ... i (not including i, as that will be handled by the lower loop)
+            for j in range(0, i, every):
+                if len(q_list) > 0:
+                    q_prev, s_prev = q_list[-1], s_list[-1]
+                else:
+                    q_prev, s_prev = init_q, init_s
+                q = a * cum_sums_leaves.iloc[j] + (1 - a) * (q_prev + s_prev)
+                s = b * (q - q_prev) + (1 - b) * s_prev
+                q_list.append(q)
+                s_list.append(s)
+    
+        if len(q_list) > 0:
+            q_prev, s_prev = q_list[-1], s_list[-1]
+        else:
+            q_prev, s_prev = init_q, init_s        
+        q = a * cum_sums_leaves.iloc[i] + (1 - a) * (q_prev + s_prev)
+        s = b * (q - q_prev) + (1 - b) * s_prev
+        q_list.append(q)
+        s_list.append(s)
+            
+        if s > 0:
+            hasLeft = every * (1 - q) / s # number of leaves nodes left
+            soFar = cum_sums_leaves.index[i]
+            total = 2 * (i + hasLeft) - 1 # number of total nodes left
+            completion = completion.append({'dfs_order': soFar, 'completion': soFar / total}, ignore_index=True)
+        else:
+            completion = completion.append({'dfs_order': cum_sums_leaves.index[i], 'completion': q}, ignore_index=True) # stalled, just report the raw q value
+            
+        i += every
+        step += 1
+    
+    return completion
 
 def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Performance', 
         figsize: tuple=(5, 5)) -> 'fig, ax':
