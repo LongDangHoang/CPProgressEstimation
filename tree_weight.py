@@ -55,17 +55,28 @@ def make_weight_scheme(state_dict: dict):
 class GenericWeightScheme(ABC):
 
     @abstractmethod
-    def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
+    def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> list:
+        """Get weight for a children nodes of a single parent node"""
         pass
 
-    def test_weight(self, weights: np.ndarray):
+    def test_weight(self, weights: np.ndarray) -> None:
+        """Test output weight for children nodes of a single parent node"""
         pass
     
-    def test_allweight(self, nodes_df: np.ndarray, weight_colname: str):
+    def test_allweight(self, nodes_df: np.ndarray, weight_colname: str) -> None:
+        """Test resulting weight for all nodes"""
         pass
 
-    def tear_down(self):
+    def tear_down(self) -> None:
+        """Remove infrastructure, if any"""
         pass
+    
+    def get_index_lst(self, valid_df: pd.DataFrame) -> list:
+        """
+        Get the list of indices for weight assignment traversal.
+        Default implementation returns all nodes with children without caring about the order"""
+        return valid_df[valid_df['NKids'] > 0].index
+
 
 class ParallelizableScheme(ABC):
     
@@ -349,23 +360,29 @@ class SubtreeSizeScheme(SumToOneScheme):
     def __init__(self, state_dict: dict):
         
         # get variables from dict
-        assign_in_dfs_order = state_dict['assign_in_dfs_order']
         nodes_df = state_dict['nodes_df'] if 'nodes_df' in state_dict else None
-
-        if assign_in_dfs_order is False:
-            raise ValueError('Cannot use subtree size scheme if not assigning weights in DFS ordering')
-        elif nodes_df is None:
-            raise ValueError('Cannot use substree size scheme without nodes_df initializer')
 
         if 'SubtreeSize' not in nodes_df.columns:
             calculate_subtree_size(nodes_df)
-            if tree:
+            if state_dict['write_to_sqlite']:
+                to_sqlite(nodes_df, tree)
+        
+        if 'DFSOrdering' not in nodes_df.columns:
+            make_dfs_ordering(nodes_df)
+            if state_dict['write_to_sqlite']:
                 to_sqlite(nodes_df, tree)
 
         self.characteristic_w = 1 # initialize the characteristic weight that describes distribution of subtree sizes
         self.previous_root = -1 # initlaize the previous root
-        self.path = [] # track path to current nodeassign_in_dfs_order
+        self.path = [] # track path to current node
         self.decay_rate = state_dict['decay_rate'] if 'decay_rate' in state_dict else 0.7
+
+    # Overriding General get index method
+    def get_index_lst(self, valid_df: pd.DataFrame) -> list:
+        """
+        Return all nodes with children sorted by their DFS Order
+        """
+        return valid_df[valid_df['NKids'] > 0].sort_values('DFSOrdering').index
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame) -> List[float]:
         """
@@ -386,6 +403,7 @@ class SubtreeSizeScheme(SumToOneScheme):
 
         assert abs(1 - weights.sum()) < EPSILON
         return weights
+    
 
     def __update_characteristic_w(self, current_node: int, nodes_df: pd.DataFrame):
         """
@@ -431,11 +449,7 @@ def assign_weight(state_dict: dict) -> None:
     valid_df.loc[0, weight_colname] = 1 # root node has weight 1
 
     # init travel index
-    if state_dict['assign_in_dfs_order']:
-        assert 'DFSOrdering' in valid_df.columns, 'Cannot assign in DFS order without known dfs ordering in dataframe'
-        index_lst = valid_df[valid_df['NKids'] > 0].sort_values('DFSOrdering').index
-    else:
-        index_lst = valid_df[valid_df['NKids'] > 0].index
+    index_lst = ws.get_index_lst(valid_df)
     
     # main weight_propogation 
     if state_dict['weight_scheme'] not in PARALLEL_SAFE or not state_dict['use_parallel']:

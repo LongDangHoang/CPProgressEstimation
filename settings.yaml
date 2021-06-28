@@ -1,28 +1,31 @@
-image_folder: 'graphs/'
-tree: 'benchmark_models/sugiyama/trees/g4_7_7_7_3.sqlite'
-schemes: [
+tree: 'benchmark_models/sugiyama/trees/g4_7_7_7_3.sqlite' # can be relative or absolute path
+schemes: [ # must match names listed in tree_weight.py
     'uniform_scheme',
     'true_scheme',
     'searchSpace_scheme',
     'subtreeSize_scheme'
 ]
-forced_recompute: [
-    # 'subtreeSize_scheme',
-    # 'uniform_scheme',
-    # 'domain_scheme',
-    # 'searchSpace_scheme'
-]
+
+scheme_settings: # settings for unique schemes
+  subtreeSize_scheme: 
+    decay_factor: 0.7
+
+forced_recompute: [] # list scheme names to be recompute
 exponential_smoothing: # name must match scheme name
     uniform_scheme:
-      a: 0.001
-      b: 0.001
+      a: 0.001 # decay factor for fitted weight value
+      b: 0.001 # decay factor for fitted slope value
     searchSpace_scheme:
       a: 0.001
       b: 0.001
     subtreeSize_scheme:
       a: 0.001
       b: 0.001
+
 write_to_sqlite: False
-save_image: True
 use_parallel: True
-assign_in_dfs_order: True
+save_image: True
+image_folder: 'graphs/'
+image_settings:
+  size: null # set to null for default value, which is (15, 15)
+  title: null # set to null for default value, which is the name of the problem instance

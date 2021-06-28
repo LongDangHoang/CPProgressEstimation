@@ -14,12 +14,13 @@ from typing import List
 def make_graph_from_tree(tree: str,
         schemes: List[str],
         exponential_smoothing: dict={},
+        scheme_settings: dict={},
         write_to_sqlite: bool=True, 
         save_image: bool=True,
         image_folder: str='graphs/',
         forced_recompute: list=None,
-        assign_in_dfs_order: bool=False,
-        use_parallel: bool=False
+        use_parallel: bool=False,
+        image_settings: dict={}
     ) -> '(fig, ax), pd.DataFrame, pd.DataFrame, dict[str, pd.Series]':
     """
     Make a graph comparing all weighting schemes for a given tree
@@ -57,10 +58,15 @@ def make_graph_from_tree(tree: str,
             'info_df': info_df,
             'weight_colname': weight_col,
             'tree': tree,
-            'assign_in_dfs_order': assign_in_dfs_order,
             'use_parallel': use_parallel,
-            'weight_scheme': scheme
+            'weight_scheme': scheme,
+            'write_to_sqlite': write_to_sqlite
         }
+
+        if scheme in scheme_settings:
+            state_dict_new = scheme_settings[scheme]
+            state_dict_new.update(state_dict)
+            state_dict = state_dict_new
 
         try:
             if (weight_col not in nodes_df.columns) or (forced_recompute is not None and scheme in forced_recompute):
@@ -80,13 +86,14 @@ def make_graph_from_tree(tree: str,
             # we want to move on as only one scheme may fail
             print(f"{scheme} computation fails! Moving on to next scheme...")
             traceback.print_exc()
-            # reset all variables related to that schemenodes_df
+            # reset all variables related to that scheme
             nodes_df = nodes_df[orig_cols]
             if scheme_name in cum_sums:
                 del cum_sums[scheme_name]
   
-    ax_title = tree.split('/')[1] + '_' + tree.split('/')[-1].strip('.sqlite')
-    fig, ax = plot_goodness(cum_sums, ax_title=ax_title)
+    ax_title = tree.split('/')[1] + '_' + tree.split('/')[-1].strip('.sqlite') if image_settings['title'] is None else image_settings['title']
+    figsize = (15, 15) if image_settings['size'] is None else tuple(image_settings['size'])
+    fig, ax = plot_goodness(cum_sums, title=ax_title, size=figsize)
     fig.savefig(image_folder + ax_title)
     fig.show()
 

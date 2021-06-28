@@ -306,8 +306,8 @@ def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: f
     completion = completion.reset_index(drop=True)['completion'] # convert to pd.series
     return completion
 
-def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Performance', 
-        figsize: tuple=(15, 15)) -> 'fig, ax':
+def plot_goodness(cum_sums: 'dict[str, pd.Series]', title: str='Weighting Performance', 
+        size: tuple=(15, 15)) -> 'fig, ax':
     """
     Plot various cumulative sums of different weighting / progress measures.
     All progress measures must have:
@@ -329,8 +329,8 @@ def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Per
     if prev_length is None:
         raise ValueError('Nothing to graph!')
 
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=figsize, squeeze=True)
-    ax.set_title(ax_title)
+    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=size, squeeze=True)
+    ax.set_title(title)
     ax.plot(pd.Series(range(prev_length)) / (prev_length - 1), label='ground truth')
     
     for name, cum_sum in cum_sums.items():
