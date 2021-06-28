@@ -1,8 +1,9 @@
 import pandas as pd
 import traceback
+import yaml
 import os
 
-from helper import to_df, get_existing_dfs_ordering, get_exp_smoothed_cum_weight, plot_goodness, get_cum_weight, to_sqlite
+from helper import to_df, get_existing_dfs_ordering, make_dfs_ordering, get_exp_smoothed_cum_weight, plot_goodness, get_cum_weight, to_sqlite
 from tree_weight import assign_weight, make_weight_scheme
 from pathlib import Path
 from argparse import ArgumentParser
@@ -30,6 +31,7 @@ def make_graph_from_tree(tree: str,
     """
     nodes_df = to_df(tree, 'nodes').set_index('NodeID')
     info_df = to_df(tree, 'info').set_index('NodeID')
+    print("Loading file complete.")
 
     cum_sums = {}
 
@@ -38,12 +40,13 @@ def make_graph_from_tree(tree: str,
         dfs_ordering = get_existing_dfs_ordering(nodes_df)
     else:
         dfs_ordering = make_dfs_ordering(nodes_df)
-        # save dfs_ordering to dataframe
-        nodes_df['DFSOrdering'] = -1
-        nodes_df.loc[dfs_ordering, 'DFSOrdering'] = range(len(dfs_ordering))
-        nodes_df.loc[:, 'DFSOrdering'] = nodes_df['DFSOrdering'].astype(int)
+        # save to file
+        if write_to_sqlite:
+            to_sqlite(nodes_df, tree)
+    print("DFS Ordering computation complete.")
 
     for scheme in schemes:
+        print(f"Starting on scheme: {scheme}")
         scheme_name = scheme.split('_')[0]
         weight_col = scheme_name[0].upper() + scheme_name[1:] + 'NodeWeight'
         orig_cols = nodes_df.columns # keep track of original columns in case scheme fails
@@ -62,10 +65,17 @@ def make_graph_from_tree(tree: str,
         try:
             if (weight_col not in nodes_df.columns) or (forced_recompute is not None and scheme in forced_recompute):
                 assign_weight(state_dict)
+                print("Weight assignment complete.")
+                if write_to_sqlite:
+                    to_sqlite(nodes_df, tree)
+
             cum_sums[scheme_name] = get_cum_weight(nodes_df, weight_col, dfs_ordering)
+            print("Cumulative sum complete")
             if scheme in exponential_smoothing: # FIXME: scheme and scheme name are different and hella confusing
-                if exponential_smoothing[scheme_name] is not None:
+                if exponential_smoothing[scheme] is not None:
                     cum_sums[scheme_name + '_exponential_smoothed'] = get_exp_smoothed_cum_weight(nodes_df, cum_sums[scheme_name])
+                    print("Exponential smoothing complete")
+            print(f"Complete scheme {scheme}")
         except Exception as e:
             # we want to move on as only one scheme may fail
             print(f"{scheme} computation fails! Moving on to next scheme...")
@@ -78,11 +88,6 @@ def make_graph_from_tree(tree: str,
     ax_title = tree.split('/')[1] + '_' + tree.split('/')[-1].strip('.sqlite')
     fig, ax = plot_goodness(cum_sums, ax_title=ax_title)
     fig.savefig(image_folder + ax_title)
-
-    if write_to_sqlite:
-        # write to sqlite file so we do not waste time recomputing
-        to_sqlite(nodes_df, tree)
-    
     fig.show()
 
     return (fig, ax), nodes_df, info_df, cum_sums
@@ -90,7 +95,7 @@ def make_graph_from_tree(tree: str,
 if __name__ == '__main__':
 
     parser = ArgumentParser(description="Configure weight estimation")
-    paser.add_argument('-c', '--config', type=Path, default='./settings.yaml', nargs='?')
+    parser.add_argument('-c', '--config', type=Path, default='./settings.yaml', nargs='?')
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:

@@ -125,22 +125,64 @@ def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     """
     Return list of nodeids in the order they were entered by
     the depth-first search algorithm.
+    Also modify inputted dataframe to hold a dfs order column.
 
     If inputted tree already has recorded ordering, use it instead.
     """
 
-    valid_df = nodes_df[nodes_df['Status'] != 3]
-    dfs_ordering = [0]
-    boundary = valid_df[(valid_df['ParentID'] == 0) & (valid_df['Status'] != 3)]\
-                .sort_values('Alternative', ascending=False).index.to_list()
+    calculate_subtree_size(nodes_df)
 
-    # run simulated dfs on tree
-    while len(boundary) > 0:
-        nxt = boundary.pop()
-        dfs_ordering.append(nxt)
-        boundary.extend(valid_df[(valid_df['ParentID'] == nxt) & (valid_df['Status'] != 3)]\
-                             .sort_values('Alternative', ascending=False).index.to_list())
+    # init
+    parentIds = {0}
+    nodes_df.loc[:, 'DFSOrdering'] = np.nan
+    nodes_df.loc[0, 'DFSOrdering'] = 0
 
+    # set up init values
+    total_children_count = nodes_df['ParentID'].isin(parentIds).sum()
+    first_children = nodes_df[(nodes_df['ParentID'].isin(parentIds)) & (nodes_df['Alternative'] == 0)].index.to_numpy()
+    current_alternative = 0
+
+    while total_children_count > 0:
+
+        # set first childrent to have DFS Order = parent + 1
+        nodes_df.loc[first_children, 'DFSOrdering'] = get_parent_column('DFSOrdering', nodes_df).loc[first_children] + 1
+    
+        # second and so on children have DFS Order = older sibling + older sibling's subtree
+        # iterate over higher alternatives
+    
+        # accumulaive parent ids
+        new_parent_ids = set()
+    
+        # set up init values
+        new_parent_ids = new_parent_ids.union(set(first_children))
+        current_children = first_children
+        temp_current = nodes_df.loc[first_children, :].reset_index().set_index('ParentID') # holds DFS order of first children indexed by parent id
+        total_children_count -= len(first_children)
+        current_alternative += 1
+        while total_children_count > 0:
+            next_children = nodes_df[(nodes_df['ParentID'].isin(parentIds)) & (nodes_df['Alternative'] == current_alternative)].index.to_numpy()
+            temp_next = nodes_df.loc[next_children, :].reset_index().set_index('ParentID')
+            temp_next.loc[:, 'DFSOrdering'] = temp_current['DFSOrdering'] + temp_current['SubtreeSize']
+            temp_next = temp_next.reset_index().set_index('NodeID') # holds DFS of next children indexed by parent id
+            nodes_df.loc[next_children, 'DFSOrdering'] = temp_next
+            # reset loop variables
+            total_children_count -= len(next_children)
+            temp_current = temp_next.reset_index().set_index('ParentID')
+            current_alternative += 1
+            new_parent_ids = new_parent_ids.union(set(next_children))
+
+        # set parent again
+        parentIds = new_parent_ids
+    
+        # compute outer loop variables again
+        total_children_count = nodes_df['ParentID'].isin(parentIds).sum()
+        first_children = nodes_df[(nodes_df['ParentID'].isin(parentIds)) & (nodes_df['Alternative'] == 0)].index.to_numpy()
+        current_alternative = 0
+    
+    nodes_df.loc[:, 'DFSOrdering'] = nodes_df['DFSOrdering'].astype(int)
+    nodes_df.loc[nodes_df[nodes_df['Status'] == 3].index, 'DFSOrdering'] = -1
+
+    dfs_ordering = get_existing_dfs_ordering(nodes_df)
     assert set(dfs_ordering) == (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index))
     return dfs_ordering
 
@@ -190,7 +232,7 @@ def get_cum_weight(nodes_df: pd.DataFrame, weight_column: str, ordering: list) -
 
     return cumsum
 
-def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: float=0.001, b: float=0.001) -> pd.DataFrame:
+def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: float=0.001, b: float=0.001) -> pd.Series:
     """
     Given cumulative sums for all nodes, returns the exponentially smoothed cummulative weight
 
@@ -198,7 +240,7 @@ def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: f
         nodes_df: dataframe of the tree
         cum_sum: the pandas series corresponding to a specific type of cumulative weighting
         a: decay factor for weight value
-        b: decay factor for slope value
+        b: deget_dfsmake_dfs_orderingcay factor for slope value
 
     Return:
         a pandas series indexed by dfs ordering containting exponentially smoothed weight
@@ -245,9 +287,9 @@ def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: f
         s_list.append(s)
             
         if s > 0:
-            hasLeft = every * (1 - q) / s # number of leaves nodes left
-            soFar = cum_sums_leaves.index[i]
-            total = 2 * (i + hasLeft) - 1 # number of total nodes left
+            hasLeft = every * (1 - q) / s # number of leaves left
+            soFar = cum_sums_leaves.index[i] # number of nodes so far
+            total = 2 * (i + hasLeft) - 1 # estimated number of total nodes left, as 2 * (Total leaves) = Total nodes
             completion = completion.append({'dfs_order': soFar, 'completion': soFar / total}, ignore_index=True)
         else:
             completion = completion.append({'dfs_order': cum_sums_leaves.index[i], 'completion': q}, ignore_index=True) # stalled, just report the raw q value
@@ -255,10 +297,17 @@ def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: f
         i += every
         step += 1
     
+    completion.loc[:, 'dfs_order'] = completion['dfs_order'].astype(int)
+    empty_df = pd.DataFrame({
+        'dfs_order': list(set(nodes_df[nodes_df['Status'] != 3]['DFSOrdering']) - set(completion['dfs_order'])),
+        'completion': np.nan
+    })
+    completion = pd.concat([completion, empty_df]).sort_values('dfs_order').fillna(method='ffill').fillna(0).set_index('dfs_order')
+    completion = completion.reset_index(drop=True)['completion'] # convert to pd.series
     return completion
 
 def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Performance', 
-        figsize: tuple=(5, 5)) -> 'fig, ax':
+        figsize: tuple=(15, 15)) -> 'fig, ax':
     """
     Plot various cumulative sums of different weighting / progress measures.
     All progress measures must have:
@@ -273,6 +322,7 @@ def plot_goodness(cum_sums: 'dict[str, pd.Series]', ax_title: str='Weighting Per
         if cum_sum.max() - 1 > EPSILON or abs(cum_sum.min()) > EPSILON: # use EPSILON cause precision
             raise ValueError(f'Invalid range for cumulative measure: {name}_scheme')
         elif prev_length and len(cum_sum) != prev_length:
+            breakpoint()
             raise ValueError('Cumulative measures\' lengths do not match!')
         elif prev_length is None:
             prev_length = len(cum_sum)
@@ -295,6 +345,8 @@ def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
     Get size of subtree rooted at each node in the tree. 
     Leaf node has a subtree size
     Pruned nodes are ignored (considered non-existent)
+
+    Modify inputted dataframe to have a subtree size column
     """
 
     valid_df = pd.DataFrame.copy(nodes_df[nodes_df['Status'] != 3])

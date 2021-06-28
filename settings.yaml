@@ -1,5 +1,5 @@
 image_folder: 'graphs/'
-tree: 'benchmark_models/nonogram/trees/dom_06.sqlite'
+tree: 'benchmark_models/sugiyama/trees/g4_7_7_7_3.sqlite'
 schemes: [
     'uniform_scheme',
     'true_scheme',
@@ -19,7 +19,7 @@ exponential_smoothing: # name must match scheme name
     searchSpace_scheme:
       a: 0.001
       b: 0.001
-    subtreesize_scheme:
+    subtreeSize_scheme:
       a: 0.001
       b: 0.001
 write_to_sqlite: False

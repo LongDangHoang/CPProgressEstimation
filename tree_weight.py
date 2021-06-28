@@ -101,8 +101,8 @@ class TrueScheme(SumToOneScheme, ParallelizableScheme):
         nodes_df = state_dict['nodes_df']
         if 'SubtreeSize' not in nodes_df.columns:
             calculate_subtree_size(nodes_df)
-            if tree:
-                to_sqlite(nodes_df, tree)
+            if state_dict['tree']:
+                to_sqlite(nodes_df, state_dict['tree'])
 
     def get_weight(self, node_id: int, nodes_df: pd.DataFrame):
         kids = nodes_df[nodes_df['ParentID'] == node_id]
@@ -111,10 +111,10 @@ class TrueScheme(SumToOneScheme, ParallelizableScheme):
     
     def get_weight_parallel(self, nodes_df: pd.DataFrame):
         assert 0 in nodes_df.index
-        res_df = pd.DataFrame.copy(nodes_df.reset_index()[['NodeID', 'ParentID', 'SubtreeSize']]).iloc[1:, :]
+        res_df = pd.DataFrame.copy(nodes_df[['ParentID', 'SubtreeSize']]).iloc[1:, :]
         parent_subtreesize = get_parent_column('SubtreeSize', nodes_df)
         res_df.loc[:, 'Weight'] = res_df['SubtreeSize'] / (parent_subtreesize - 1)
-        return res_df
+        return res_df.reset_index()
 
 class ZeroScheme(GenericWeightScheme, ParallelizableScheme):
     """
@@ -456,13 +456,13 @@ def assign_weight(state_dict: dict) -> None:
         weights = sparse.csr_matrix((weights['Weight'].to_numpy(), (weights['ParentID'].to_numpy(), weights['NodeID'].to_numpy())),
                 shape=(nodes_df.shape[0], nodes_df.shape[0]))
             
-        running = weights
+        running = weights[0]
         # > 0 works for normal weight, but test weighting schemes include negative weights
-        while np.any((running[0] != 0).data):
-            temp = running[0].tocoo()
+        while np.any((running != 0).data):
+            temp = running.tocoo()
             col = temp.col[temp.data != 0]
             valid_df.loc[col, weight_colname] = temp.data[temp.data != 0]
-            running = running * weights
+            running = running * weights 
 
         valid_df.loc[0, weight_colname] = 1
         
