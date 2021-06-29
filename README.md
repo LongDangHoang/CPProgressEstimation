@@ -76,4 +76,11 @@ To output all such files for all problem instances, execute the `make_paths.py` 
 +-- make_paths.py
 ```
 
+## Testing
+
+A simple test harness can be invoked by 
+```bash
+python3 test.py
+```
+
 MiniZinc: https://github.com/MiniZinc

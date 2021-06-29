@@ -21,12 +21,11 @@ def to_df(file: str, table: str) -> pd.DataFrame:
     """
     Return pandas' dataframe representation of a table in sqlite file (tree search log)
 
-    Parameters:
+    Args:
         - file: string of the path to the sqlite3 database
         - table: table to be saved  
     Returns:
-        - list of dataframes, one for each table in the database
-
+        - the requested dataframe
     """
 
     assert table.upper() in  {'NODES', 'INFO', 'BOOKMARKS', 'NOGOODS'}
@@ -40,6 +39,10 @@ def to_sqlite(nodes_df: pd.DataFrame, tree: str) -> None:
     """
     Write dataframe to sqlite and ensure readability by
     MiniZincIDE
+
+    Args:
+        - nodes_df: the full dataframe to be saved, including all pruned nodes
+        - tree: path to the .sqlite file
     """
     engine = create_engine('sqlite:///' + tree)
     strict_order = ['NodeID', 'ParentID', 'Alternative', 'NKids', 'Status', 'Label']
@@ -51,7 +54,7 @@ def to_sqlite(nodes_df: pd.DataFrame, tree: str) -> None:
 
 def get_all_trees(benchmark_folder: str) -> list:
     """
-    Return list of string paths to all sqlite files
+    Return list of string paths to all sqlite files in a folder
     """
     trees = []
     for root, dirs, files in os.walk(benchmark_folder):
@@ -65,10 +68,12 @@ def parse_info_string(node_info: str, early_stop: str=None) -> dict:
     Domains must not be empty (otherwise the node will have been pruned)
 
     Args:
-        - early_stop: return the early stop variable's domain right away
+        - node_info: the string representing the domain of a node, extracted from the search profile
+        - early_stop: name of a variable to report the domain of specifically 
 
     Returns:
-        - {variable {str}: domain{range} }
+        - {variable {str}: domain{range} } for all variables if early_stop is None
+        - domain{range} of the early_stop variable if it is provided
     """
     x = node_info.replace("\n", "").replace("\t", "") # replace new lines and tabs
     x = x.strip('{"domains": ').strip('"}') # strip JSON notation
@@ -106,7 +111,7 @@ def parse_info_string(node_info: str, early_stop: str=None) -> dict:
         except ValueError:
             raise ValueError("Cannot get size of domain of a variable with len!")
         
-        if early_stop:
+        if early_stop is not None and early_stop == varname:
             return info_dict[varname]
 
     return info_dict
@@ -115,6 +120,9 @@ def get_existing_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     """
     Retrieve a list of node ids in the order they were visited depth-first searched.
     Raise error if dfs ordering not computed before hand
+
+    Args:
+        - nodes_df: a dataframe containing at least all valid nodes
     """
     if 'DFSOrdering' in nodes_df.columns:
         return nodes_df[nodes_df['Status'] != 3].sort_values('DFSOrdering').reset_index()['NodeID'].to_numpy()
@@ -127,10 +135,12 @@ def make_dfs_ordering(nodes_df: pd.DataFrame) -> list:
     the depth-first search algorithm.
     Also modify inputted dataframe to hold a dfs order column.
 
-    If inputted tree already has recorded ordering, use it instead.
+    Args:
+        - nodes_df: the full dataframe containing all nodes
     """
 
-    calculate_subtree_size(nodes_df)
+    if 'SubtreeSize' not in nodes_df.columns:
+        calculate_subtree_size(nodes_df)
 
     # init
     parentIds = {0}
@@ -191,6 +201,11 @@ def make_post_ordering(nodes_df: pd.DataFrame, node_id: int=0, post_ordering: li
     Return list of node ids in post order, i.e. left subtree - right subtree - root
 
     We ignored restart nodes.
+
+    Args:
+        - nodes_df: the full dataframe containing at least all valid nodes
+        - node_id: the root of the tree which we get post_ordering out of
+        - post_odering: use internally for recursive purpose. Ignore
     """
     if post_ordering is None:
         post_ordering = []
@@ -217,6 +232,11 @@ def make_post_ordering(nodes_df: pd.DataFrame, node_id: int=0, post_ordering: li
 def get_cum_weight(nodes_df: pd.DataFrame, weight_column: str, ordering: list) -> pd.Series:
     """
     Calculate cumulative sum according to an ordering using weight_column
+
+    Args:
+        - nodes_df: the full dataframe containing at least all valid nodes
+        - weight_column: the name of the column containing node weight from which to get a cumulative sum
+        - ordering: the depth first search ordering of nodes_df
     """
     if set(ordering) != (set(nodes_df.index) - set(nodes_df[nodes_df['Status'] == 3].index)):
         raise ValueError("Ordering is not a correct ordering of nodes. Some nodes are missing or redundant.")
@@ -237,13 +257,13 @@ def get_exp_smoothed_cum_weight(nodes_df: pd.DataFrame, cum_sum: pd.Series, a: f
     Given cumulative sums for all nodes, returns the exponentially smoothed cummulative weight
 
     Args:
-        nodes_df: dataframe of the tree
-        cum_sum: the pandas series corresponding to a specific type of cumulative weighting
-        a: decay factor for weight value
-        b: deget_dfsmake_dfs_orderingcay factor for slope value
+        - nodes_df: dataframe of the tree
+        - cum_sum: the pandas series corresponding to a specific type of cumulative weighting
+        - a: decay factor for weight value
+        - b: deget_dfsmake_dfs_orderingcay factor for slope value
 
     Return:
-        a pandas series indexed by dfs ordering containting exponentially smoothed weight
+        - a pandas series indexed by dfs ordering containting exponentially smoothed weight
     """
     cum_sums_leaves = cum_sum.loc[
                         nodes_df[nodes_df['Status'].isin({0, 1})]['DFSOrdering'] # cum sum is indexed by dfs ordering
@@ -347,8 +367,10 @@ def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
     Pruned nodes are ignored (considered non-existent)
 
     Modify inputted dataframe to have a subtree size column
-    """
 
+    Args:
+        nodes_df: the full dataframe containing at least all valid nodes
+    """
     valid_df = pd.DataFrame.copy(nodes_df[nodes_df['Status'] != 3])
     valid_df['SubtreeSize'] = np.nan
     valid_df['HasNotSubtreeSize'] = True
@@ -373,11 +395,12 @@ def calculate_subtree_size(nodes_df: pd.DataFrame) -> None:
     nodes_df.loc[:, 'SubtreeSize'] = nodes_df['SubtreeSize'].astype(int)
 
 def pairwise_diff(lst: list) -> bool:
-    # helper for find_split_variable
+    # helper for finding_split_variable
+    # check a list of elements contain only unique elements
     return len(set(lst)) == len(lst)
 
 def is_unequal_split(nodes_df: int, children_idx: list) -> bool:    
-    # helper for find_split_variable
+    # helper for finding_split_variable
     # return whether the split is binary (==, !=) or distribution of values
     return set(nodes_df.loc[children_idx, 'Label']\
                    .str.split(' ', expand=True)[1]\
@@ -406,38 +429,38 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
         return [], mappings, None, None
     
     label_var = nodes_df.loc[children_idx[0], 'Label'].split(' ')[0]
-    par_domain = parse_info_string(info_df.loc[par_idx, 'Info'])
+    par_domain = parse_info_string(info_df.loc[par_idx, 'Info']) # extract domain of parent node
     children_domain = [
         parse_info_string(info_df.loc[child_id, 'Info']) for child_id in children_idx
-    ]
+    ] # extract domains of children nodes
 
-    if label_var in mappings: # find in dictionary first
-        if mappings[label_var] in par_domain: # sometimes csv compiled file do not match actual label
+    if label_var in mappings: # find in dictionary first for efficiency
+        if mappings[label_var] in par_domain: # sometimes minizinc provided paths file's variable name does not match actual label
             return [mappings[label_var]], mappings, par_domain, children_domain
 
     split_vals = nodes_df.loc[children_idx, 'Label']\
-                        .str.split('=', expand=True)[1]
+                        .str.split('=', expand=True)[1] # extract the value(s) on which splits are made
     
     # if no good has no label,
     if split_vals.isna().sum() > 0:
         if len(children_idx) == 2: # we expect unequal split if two children
             assert len(split_vals) == 2
             assert split_vals.isna().values[1] == True # we also expect the nogood no label to be the second child 
-            split_vals = [int(split_vals.values[0])] # account for nogoods with no labels
+            split_vals = [int(split_vals.values[0])] # an unequal split with only one viable subtree has one split value
             uneq_split = True
         else: # we expect equal split if more children
             # we cannot expect to find a split variable
             return [], mappings, None, None
-    else:
+    else: # all children have a label
         split_vals = split_vals.astype(int).unique().flatten()
-        uneq_split = is_unequal_split(nodes_df, children_idx)
+        uneq_split = is_unequal_split(nodes_df, children_idx) # check if the split is an unequal one
     cands = []
 
-    # children domain may include domains of no-goods which are unreliable
-    # for now we ignore this thorny problem
+    # children domain may include domains of no-goods which are unreliable, i.e. not empty when they should be
+    # for now we ignore this thorny problem and assume these unreliable domains do not affect our ability to find a split variable
 
     if not uneq_split:
-        assert len(split_vals) == len(children_idx)
+        assert len(split_vals) == len(children_idx) # for equal split, each child has an assigned value in the split variable
         for variable in par_domain:
             # each child should have a label = split_value
             rule_1 = all([children_domain[i][variable] == {split_vals[i]} for i in range(len(children_domain))])
@@ -447,10 +470,10 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
             # split values should be different
             rule_3 = pairwise_diff(split_vals)
 
-            if rule_1 and rule_2 and rule_3:
+            if rule_1 and rule_2 and rule_3: # variable that satisfies all 3 rules is a candidate split variable
                 cands.append(variable)      
     else:
-        assert len(children_domain) == 2
+        assert len(children_domain) == 2 # all unequal splits must be binary
         assert len(split_vals) == 1
         split_val = split_vals[0]
         for variable in par_domain:
@@ -468,17 +491,21 @@ def find_split_variable(par_idx: int, nodes_df: pd.DataFrame,
             if (rule_1 and rule_2):
                 cands.append(variable)
 
-    # if cand is already set in parent, remove
+    # prune bad candidates: a candidate already locked in the parent node cannot be the split variable 
     cands = [name for name in cands if not len(par_domain[name]) == 1]
                     
     if len(cands) == 1:
-        mappings[label_var] = cands[0]
+        mappings[label_var] = cands[0] # ignore the thorny problem of which split variable is correct
     
     return cands, mappings, par_domain, children_domain
 
 def get_parent_column(column: str, df: pd.DataFrame) -> pd.Series:
     """
     Return the column value associated with the parent of each node
+
+    Args:
+        - column: the column of which to get the parent's values for
+        - df: the dataframe containing all nodes and their parents
     """
     has_root = 1 if 0 == df.index[0] else 0
     j = df.iloc[has_root:, :].reset_index().set_index('ParentID')[['NodeID', column]]

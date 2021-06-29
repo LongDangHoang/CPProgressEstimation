@@ -1,4 +1,4 @@
-tree: 'benchmark_models/sugiyama/trees/g4_7_7_7_3.sqlite' # can be relative or absolute path
+tree: 'benchmark_models/jobshop/trees/jobshop_ft06.sqlite' # can be relative or absolute path
 schemes: [ # must match names listed in tree_weight.py
     'uniform_scheme',
     'true_scheme',
